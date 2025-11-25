@@ -309,7 +309,7 @@ def apply_lie(target: float, lie_label: str) -> float:
     return target * mult
 
 
-# ---- SCORING & RECOMMENDATION ---- #
+# ---- STRATEGY & SCORING ---- #
 
 def shot_score(
     target_total: float,
@@ -483,6 +483,53 @@ def build_situation_summary(
     return f"{lie_text}, {elev_text}, {wind_text}, {firm_text}, {strat_text}."
 
 
+def auto_pick_strategy(
+    target_distance_yards: float,
+    trouble_short_label: str,
+    trouble_long_label: str,
+    skill: str,
+) -> str:
+    """
+    Simple rule-based strategy picker.
+
+    Returns one of:
+      - "Conservative (Par-focused)"
+      - "Balanced"
+      - "Aggressive (Pin-seeking)"
+    """
+    t_short = trouble_short_label.lower()
+    t_long = trouble_long_label.lower()
+    skill = skill.lower()
+
+    severe_trouble = (t_short.startswith("severe") or t_long.startswith("severe"))
+    mild_trouble = (t_short.startswith("mild") or t_long.startswith("mild"))
+
+    # Very short wedges: more room to be aggressive if no big trouble
+    if target_distance_yards < 110:
+        if severe_trouble or mild_trouble:
+            return "Balanced"
+        return "Aggressive (Pin-seeking)"
+
+    # Mid-iron zone
+    if 110 <= target_distance_yards <= 190:
+        if severe_trouble:
+            return "Conservative (Par-focused)"
+        if mild_trouble:
+            if skill == "recreational":
+                return "Conservative (Par-focused)"
+            else:
+                return "Balanced"
+        return "Balanced"
+
+    # Long shots (190+)
+    if severe_trouble or mild_trouble:
+        return "Conservative (Par-focused)"
+
+    if skill == "highly consistent":
+        return "Balanced"
+    return "Conservative (Par-focused)"
+
+
 def recommend_shots_with_sg(
     target_total: float,
     candidates,
@@ -495,6 +542,8 @@ def recommend_shots_with_sg(
     front_yards: float,
     back_yards: float,
     skill_factor: float,
+    pin_lateral_offset: float,
+    green_width: float,
     n_sim: int = 200,
     top_n: int = 3,
 ):
@@ -543,6 +592,8 @@ def recommend_shots_with_sg(
             trouble_long_label=long_trouble_label,
             skill_factor=skill_factor,
             n_sim=n_sim,
+            pin_lateral_offset=pin_lateral_offset,
+            green_width=green_width,
         )
 
         sg = baseline - expected_if_played  # positive = good
@@ -567,7 +618,10 @@ def recommend_shots_with_sg(
 
 def main():
     st.title("Golf Caddy")
-    st.caption("Enter your conditions and let Golf Caddy suggest shot options based on professional-style decision logic and strokes gained.")
+    st.caption(
+        "Enter your conditions and let Golf Caddy suggest shot options based on "
+        "professional-style decision logic and strokes gained."
+    )
 
     # Driver speed and precomputed data (shared across tabs)
     driver_speed = st.slider(
@@ -630,14 +684,22 @@ def main():
             )
 
         with col_c:
-            strategy_label = st.radio(
-                "Strategy",
+            use_auto_strategy = st.checkbox(
+                "Auto-select strategy based on situation",
+                value=True,
+                help="Let Golf Caddy choose Conservative/Balanced/Aggressive "
+                     "based on distance, trouble, and your consistency.",
+            )
+            manual_strategy = st.radio(
+                "Strategy (if not auto)",
                 ["Balanced", "Conservative (Par-focused)", "Aggressive (Pin-seeking)"],
+                index=0,
                 help="Conservative favors safety, Aggressive chases pins, Balanced is in between.",
             )
+            strategy_label = manual_strategy  # may be overridden later
 
         # Advanced options
-        with st.expander("Advanced: Green, Trouble & Player Tendencies (Optional)"):
+        with st.expander("Advanced: Green, Trouble, Pin Position & Player Tendencies (Optional)"):
             st.markdown("**Green Layout & Safe Center**")
             use_center = st.checkbox(
                 "Aim at the safe center using front/back of green",
@@ -694,6 +756,35 @@ def main():
                 )
 
             st.markdown("---")
+            st.markdown("**Pin Lateral Position (Optional)**")
+            pw1, pw2 = st.columns(2)
+            with pw1:
+                green_width = st.number_input(
+                    "Green width (yards, left-to-right)",
+                    min_value=0.0,
+                    max_value=60.0,
+                    value=0.0,
+                    step=1.0,
+                    help="Approximate green width. Leave 0 if you do not want lateral modeling.",
+                )
+            with pw2:
+                pin_side = st.selectbox(
+                    "Pin side",
+                    ["Center", "Left", "Right"],
+                    help="Approximate lateral pin location on the green.",
+                )
+
+            pin_lateral_offset = 0.0
+            if green_width > 0:
+                half_w = green_width / 2.0
+                if pin_side == "Left":
+                    pin_lateral_offset = -0.66 * half_w
+                elif pin_side == "Right":
+                    pin_lateral_offset = 0.66 * half_w
+                else:
+                    pin_lateral_offset = 0.0
+
+            st.markdown("---")
             st.markdown("**Player Tendencies (Optional)**")
             tendency = st.radio(
                 "Usual Miss (Distance)",
@@ -707,7 +798,7 @@ def main():
                 help="Used to scale dispersion windows and strokes-gained simulations.",
             )
 
-        # Defaults if advanced not touched
+        # Defaults if advanced not touched (defensive programming)
         if "trouble_short_label" not in locals():
             trouble_short_label = "None"
         if "trouble_long_label" not in locals():
@@ -718,8 +809,18 @@ def main():
             tendency = "Neutral"
         if "skill" not in locals():
             skill = "Intermediate"
+        if "green_width" not in locals():
+            green_width = 0.0
+        if "pin_lateral_offset" not in locals():
+            pin_lateral_offset = 0.0
+        if "front_yards" not in locals():
+            front_yards = 0.0
+        if "back_yards" not in locals():
+            back_yards = 0.0
+        if "use_center" not in locals():
+            use_center = False
 
-        # Skill factor for dispersion scaling
+        # Skill factor for dispersion scaling (used in SG + charts)
         if skill == "Recreational":
             skill_factor = 1.3
         elif skill == "Highly Consistent":
@@ -727,8 +828,7 @@ def main():
         else:
             skill_factor = 1.0
 
-        # Use base shots; we apply skill_factor in SG engine and charts
-        all_shots = all_shots_base
+        all_shots = all_shots_base  # don't mutate cached shots
 
         # Normalize for logic
         wind_dir = wind_dir_label.lower()
@@ -760,6 +860,18 @@ def main():
                 bias_adjust = -3.0   # aim a bit shorter
 
             final_target_biased = final_target + bias_adjust
+
+            # Auto-pick strategy if enabled
+            if use_auto_strategy:
+                strategy_label = auto_pick_strategy(
+                    target_distance_yards=final_target_biased,
+                    trouble_short_label=trouble_short_label,
+                    trouble_long_label=trouble_long_label,
+                    skill=skill,
+                )
+                st.caption(f"Auto-selected strategy: **{strategy_label}**")
+            else:
+                st.caption(f"Using manual strategy selection: **{strategy_label}**")
 
             st.markdown(f"### Adjusted Target (plays as): **{final_target_biased:.1f} yds**")
 
@@ -797,7 +909,7 @@ def main():
             # For SG, starting distance is the geometric distance to hole
             start_distance_yards = raw_target
 
-            # For SG green model
+            # For SG green model (0/0 triggers virtual green)
             front_for_sg = front_yards if (use_center and front_yards > 0) else 0.0
             back_for_sg = back_yards if (use_center and back_yards > front_for_sg) else 0.0
 
@@ -813,6 +925,8 @@ def main():
                 front_yards=front_for_sg,
                 back_yards=back_for_sg,
                 skill_factor=skill_factor,
+                pin_lateral_offset=pin_lateral_offset,
+                green_width=green_width,
                 n_sim=200,
                 top_n=3,
             )
@@ -875,7 +989,12 @@ def main():
             )
 
             target_line_v = alt.Chart(
-                pd.DataFrame({"Shot": df_disp["Shot"], "Target": [final_target_biased] * len(df_disp)})
+                pd.DataFrame(
+                    {
+                        "Shot": df_disp["Shot"],
+                        "Target": [final_target_biased] * len(df_disp),
+                    }
+                )
             ).mark_rule(strokeDash=[4, 4]).encode(
                 y="Target:Q"
             )
@@ -968,6 +1087,12 @@ def main():
             "on one side, shots that are more likely to finish there are penalized more heavily in the scoring."
         )
 
+        st.markdown("**Pin Lateral Position & Short-Siding**")
+        st.markdown(
+            "When you provide green width and pin side (left/center/right), the strokes-gained engine models "
+            "left/right dispersion relative to the pin and penalizes short-sided misses that finish outside the green."
+        )
+
         st.markdown("**Green Firmness & Roll-Out**")
         st.markdown(
             "Firm greens lead to more roll after landing, while soft greens stop closer to carry distance. "
@@ -981,11 +1106,10 @@ def main():
             "heavily wide-dispersion options are penalized when trouble is present."
         )
 
-        st.markdown("**Strategy**")
+        st.markdown("**Strategy (Manual or Auto)**")
         st.markdown(
-            "- **Conservative (Par-focused):** Favors safer options, especially when trouble is present.\n"
-            "- **Balanced:** Blends proximity to the pin with reasonable safety.\n"
-            "- **Aggressive (Pin-seeking):** Allows more risk when it brings the ball closer to the hole."
+            "You can either choose a strategy (Conservative/Balanced/Aggressive) manually, or let Golf Caddy "
+            "auto-select one based on distance, trouble severity, and your consistency level."
         )
 
         st.markdown("**Strokes Gained**")
