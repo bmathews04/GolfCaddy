@@ -1,8 +1,8 @@
-import copy
-
 import streamlit as st
 import pandas as pd
 import altair as alt
+
+from strokes_gained_engine import simulate_expected_strokes_for_shot
 
 # ---- CONSTANTS ---- #
 
@@ -320,9 +320,8 @@ def shot_score(
     strategy_label: str,
 ) -> float:
     """
+    Legacy distance/risk score used as a tie-breaker.
     Lower = better.
-    Base term is distance difference weighted by trouble risk and dispersion,
-    then we add 'golf-smart' penalties scaled by strategy style.
     """
     diff = abs(total - target_total)
 
@@ -371,54 +370,16 @@ def shot_score(
 
     # 2) Prefer fuller swings for longer shots
     if target_total > 100 and swing_mult < 0.8:
-        # discourage 1/2, 1/4 wedges on 150-yd shots
         penalty += 8.0
 
     # 3) Prefer less-than-full shots for short-ish wedges
     if target_total < 90 and swing_mult >= 0.94 and category == "scoring_wedge":
-        # small nudge away from nuking a full wedge on a 70-yd shot
         penalty += 3.0
 
     # Strategy style: how strong are the safety penalties?
     penalty_scale = get_strategy_penalty_scale(strategy_label)
 
     return effective_diff + penalty * penalty_scale
-
-
-def recommend_shots(
-    target_total: float,
-    candidates,
-    short_trouble_label: str,
-    long_trouble_label: str,
-    green_firmness_label: str,
-    strategy_label: str,
-    top_n: int = 3,
-):
-    """Return top_n shots sorted by 'tour-brain' score."""
-    scored = []
-    for s in candidates:
-        carry = s["carry"]
-        roll = compute_roll_yards(s, green_firmness_label)
-        total = carry + roll
-        sc = shot_score(
-            target_total,
-            total,
-            s,
-            short_trouble_label,
-            long_trouble_label,
-            strategy_label,
-        )
-        scored.append(
-            {
-                **s,
-                "carry": carry,
-                "total": total,
-                "diff": abs(total - target_total),
-                "score": sc,
-            }
-        )
-    scored.sort(key=lambda x: x["score"])
-    return scored[:top_n]
 
 
 def explain_shot_choice(
@@ -522,11 +483,91 @@ def build_situation_summary(
     return f"{lie_text}, {elev_text}, {wind_text}, {firm_text}, {strat_text}."
 
 
+def recommend_shots_with_sg(
+    target_total: float,
+    candidates,
+    short_trouble_label: str,
+    long_trouble_label: str,
+    green_firmness_label: str,
+    strategy_label: str,
+    start_distance_yards: float,
+    start_surface: str,
+    front_yards: float,
+    back_yards: float,
+    skill_factor: float,
+    n_sim: int = 200,
+    top_n: int = 3,
+):
+    """
+    Recommend shots using strokes gained as the primary ranking metric.
+
+    Returns:
+      List of candidate shot dicts with:
+        - carry, total, diff
+        - score (legacy distance-based score)
+        - sg (strokes gained vs baseline)
+    """
+    scored = []
+
+    for s in candidates:
+        # Base carry/total with roll
+        carry = s["carry"]
+        roll = compute_roll_yards(s, green_firmness_label)
+        total = carry + roll
+
+        # Legacy distance/risk score (tie-breaker)
+        legacy_score = shot_score(
+            target_total,
+            total,
+            s,
+            short_trouble_label,
+            long_trouble_label,
+            strategy_label,
+        )
+
+        # Prepare shot dict for SG engine
+        shot_for_sg = {
+            "total": total,
+            "sigma": s.get("sigma", 7.0),
+            "category": s.get("category", ""),
+        }
+
+        baseline, expected_if_played = simulate_expected_strokes_for_shot(
+            shot_for_sg,
+            start_distance_yards=start_distance_yards,
+            start_surface=start_surface,
+            target_distance_yards=start_distance_yards,
+            front_yards=front_yards,
+            back_yards=back_yards,
+            trouble_short_label=short_trouble_label,
+            trouble_long_label=long_trouble_label,
+            skill_factor=skill_factor,
+            n_sim=n_sim,
+        )
+
+        sg = baseline - expected_if_played  # positive = good
+
+        scored.append(
+            {
+                **s,
+                "carry": carry,
+                "total": total,
+                "diff": abs(total - target_total),
+                "score": legacy_score,
+                "sg": sg,
+            }
+        )
+
+    # Sort primarily by strokes gained (descending), then by legacy score (ascending)
+    scored.sort(key=lambda x: (-x["sg"], x["score"]))
+    return scored[:top_n]
+
+
 # ---- STREAMLIT APP ---- #
 
 def main():
     st.title("Golf Caddy")
-    st.caption("Enter your conditions and let Golf Caddy suggest shot options based on professional-style decision logic.")
+    st.caption("Enter your conditions and let Golf Caddy suggest shot options based on professional-style decision logic and strokes gained.")
 
     # Driver speed and precomputed data (shared across tabs)
     driver_speed = st.slider(
@@ -555,7 +596,7 @@ def main():
                 help="Measured distance to the flag from your current position.",
             )
         with pin_col2:
-            st.write("")  # spacer
+            st.write("")
             st.write("")
             st.markdown("**Core Shot Inputs**")
 
@@ -663,7 +704,7 @@ def main():
             skill = st.radio(
                 "Ball Striking Consistency",
                 ["Recreational", "Intermediate", "Highly Consistent"],
-                help="Used to scale dispersion windows. More consistent players have tighter distance spreads.",
+                help="Used to scale dispersion windows and strokes-gained simulations.",
             )
 
         # Defaults if advanced not touched
@@ -686,11 +727,8 @@ def main():
         else:
             skill_factor = 1.0
 
-        # Build a scaled copy of all_shots with skill-adjusted dispersion
-        all_shots = copy.deepcopy(all_shots_base)
-        for s in all_shots:
-            if "sigma" in s and s["sigma"] is not None:
-                s["sigma"] = s["sigma"] * skill_factor
+        # Use base shots; we apply skill_factor in SG engine and charts
+        all_shots = all_shots_base
 
         # Normalize for logic
         wind_dir = wind_dir_label.lower()
@@ -717,11 +755,9 @@ def main():
             # Apply player tendency bias
             bias_adjust = 0.0
             if tendency == "Usually Short":
-                # Aim a little longer
-                bias_adjust = 3.0
+                bias_adjust = 3.0    # aim a bit longer
             elif tendency == "Usually Long":
-                # Aim a little shorter
-                bias_adjust = -3.0
+                bias_adjust = -3.0   # aim a bit shorter
 
             final_target_biased = final_target + bias_adjust
 
@@ -750,13 +786,34 @@ def main():
                     f"Target includes a small adjustment for your usual miss pattern ({tendency.lower()})."
                 )
 
-            best3 = recommend_shots(
-                final_target_biased,
-                all_shots,
-                trouble_short_label,
-                trouble_long_label,
-                green_firmness_label,
-                strategy_label,
+            # Map lie to SG surface
+            if lie_label == "Good":
+                start_surface = "fairway"
+            elif lie_label == "Ok":
+                start_surface = "light_rough"
+            else:
+                start_surface = "heavy_rough"
+
+            # For SG, starting distance is the geometric distance to hole
+            start_distance_yards = raw_target
+
+            # For SG green model
+            front_for_sg = front_yards if (use_center and front_yards > 0) else 0.0
+            back_for_sg = back_yards if (use_center and back_yards > front_for_sg) else 0.0
+
+            best3 = recommend_shots_with_sg(
+                target_total=final_target_biased,
+                candidates=all_shots,
+                short_trouble_label=trouble_short_label,
+                long_trouble_label=trouble_long_label,
+                green_firmness_label=green_firmness_label,
+                strategy_label=strategy_label,
+                start_distance_yards=start_distance_yards,
+                start_surface=start_surface,
+                front_yards=front_for_sg,
+                back_yards=back_for_sg,
+                skill_factor=skill_factor,
+                n_sim=200,
                 top_n=3,
             )
 
@@ -766,6 +823,13 @@ def main():
                     f"**{i}. {s['club']}** — {s['shot_type']} | {s['trajectory']}  "
                     f"(Carry ≈ {s['carry']:.1f} yds, plays to ~{s['total']:.1f} yds)"
                 )
+
+                sg_value = s.get("sg", None)
+                if sg_value is not None:
+                    st.caption(
+                        f"Expected strokes gained vs baseline from this position: {sg_value:+.2f}"
+                    )
+
                 st.caption(
                     explain_shot_choice(
                         s,
@@ -782,13 +846,14 @@ def main():
 
             disp_rows = []
             for s in best3:
-                sigma = s.get("sigma", 7.0)
+                base_sigma = s.get("sigma", 7.0)
+                sigma_effective = base_sigma * skill_factor
                 disp_rows.append(
                     {
                         "Shot": f"{s['club']} {s['shot_type']}",
                         "Expected Total (yds)": round(s["total"], 1),
-                        "Min (yds)": round(s["total"] - sigma, 1),
-                        "Max (yds)": round(s["total"] + sigma, 1),
+                        "Min (yds)": round(s["total"] - sigma_effective, 1),
+                        "Max (yds)": round(s["total"] + sigma_effective, 1),
                     }
                 )
             df_disp = pd.DataFrame(disp_rows)
@@ -828,17 +893,14 @@ def main():
 
             greens_data = []
 
-            # Front/back are raw yardages to the front/back from your position
             if front_yards > 0:
                 greens_data.append({"Distance": front_yards, "Label": "Front"})
             if back_yards > 0 and back_yards > front_yards:
                 greens_data.append({"Distance": back_yards, "Label": "Back"})
 
-            # Pin and "plays as" target
             greens_data.append({"Distance": target_pin, "Label": "Pin"})
             greens_data.append({"Distance": final_target_biased, "Label": "Plays As"})
 
-            # Center of green if using center logic
             if using_center:
                 greens_data.append({"Distance": raw_target, "Label": "Center"})
 
@@ -888,8 +950,8 @@ def main():
         st.subheader("How Golf Caddy Works")
         st.markdown(
             "Golf Caddy evaluates your target distance, wind, lie, elevation, green firmness, "
-            "trouble around the green, and your strategy preferences to recommend shots that balance "
-            "distance, dispersion, and risk in a way that mirrors professional caddie decision-making."
+            "trouble around the green, your consistency, and your strategy preferences. "
+            "It then recommends shots based on both distance/risk logic and strokes gained calculations."
         )
 
         st.markdown("### Key Concepts")
@@ -924,6 +986,14 @@ def main():
             "- **Conservative (Par-focused):** Favors safer options, especially when trouble is present.\n"
             "- **Balanced:** Blends proximity to the pin with reasonable safety.\n"
             "- **Aggressive (Pin-seeking):** Allows more risk when it brings the ball closer to the hole."
+        )
+
+        st.markdown("**Strokes Gained**")
+        st.markdown(
+            "Strokes gained compares your expected performance from the current position to a baseline player. "
+            "For each candidate shot, Golf Caddy simulates dispersions and uses distance-to-hole curves to estimate "
+            "how many strokes it will take to finish the hole if you choose that shot. The difference vs baseline "
+            "is reported as expected strokes gained."
         )
 
         st.markdown("**Safe Center Target**")
