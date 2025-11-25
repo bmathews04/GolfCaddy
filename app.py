@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 
 # ---- CONSTANTS ---- #
 
@@ -246,7 +247,7 @@ def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> f
     Tuned wind model:
       - Into: hurts more than downwind helps
       - Down: helps, but less than into hurts
-      - Cross: tiny safety bump so you do not under-club
+      - Cross: small safety bump so you do not under-club
       - Short shots less affected than long shots
     """
     label = wind_strength_label.lower().strip()
@@ -493,7 +494,7 @@ def explain_shot_choice(
 # ---- STREAMLIT APP ---- #
 
 def main():
-    st.title("Golf Shot Selector (Tour Brain Mode)")
+    st.title("Golf Caddy")
 
     # Driver speed and precomputed data
     driver_speed = st.slider("Current Driver Speed (mph)", 90, 115, 100)
@@ -646,6 +647,7 @@ def main():
 
         # ---- Dispersion visualization for recommended shots ---- #
         st.subheader("Dispersion Preview (Recommended Shots)")
+
         disp_rows = []
         for s in best3:
             sigma = s.get("sigma", 7.0)
@@ -653,16 +655,50 @@ def main():
                 {
                     "Shot": f"{s['club']} {s['shot_type']}",
                     "Expected Total (yds)": round(s["total"], 1),
-                    "-1σ (yds)": round(s["total"] - sigma, 1),
-                    "+1σ (yds)": round(s["total"] + sigma, 1),
+                    "Min (yds)": round(s["total"] - sigma, 1),
+                    "Max (yds)": round(s["total"] + sigma, 1),
                 }
             )
         df_disp = pd.DataFrame(disp_rows)
         st.dataframe(df_disp, use_container_width=True)
-        st.caption("±1σ shows an approximate distance range you can expect for each shot.")
+        st.caption("Min/Max show an approximate ±1σ distance range you can expect for each shot.")
 
-        # Simple bar chart of expected total distances
-        st.bar_chart(df_disp.set_index("Shot")[["Expected Total (yds)"]])
+        # 1) Error-bar chart (Expected ±1σ)
+        error_base = alt.Chart(df_disp).encode(
+            x=alt.X("Shot:N", sort=None),
+        )
+
+        error_points = error_base.mark_point(size=80).encode(
+            y=alt.Y("Expected Total (yds):Q", title="Distance (yds)"),
+        )
+
+        error_bars = error_base.mark_rule().encode(
+            y="Min (yds):Q",
+            y2="Max (yds):Q",
+        )
+
+        target_line_v = alt.Chart(
+            pd.DataFrame({"Shot": df_disp["Shot"], "Target": [final_target] * len(df_disp)})
+        ).mark_rule(strokeDash=[4, 4]).encode(
+            y="Target:Q"
+        )
+
+        st.altair_chart(error_points + error_bars + target_line_v, use_container_width=True)
+
+        # 2) Horizontal range bar chart ("shot windows")
+        range_chart = alt.Chart(df_disp).mark_bar(opacity=0.6).encode(
+            y=alt.Y("Shot:N", sort=None),
+            x=alt.X("Min (yds):Q", title="Distance (yds)"),
+            x2="Max (yds):Q",
+        )
+
+        target_line_h = alt.Chart(
+            pd.DataFrame({"Target": [final_target]})
+        ).mark_rule(color="black", strokeDash=[4, 4]).encode(
+            x="Target:Q"
+        )
+
+        st.altair_chart(range_chart + target_line_h, use_container_width=True)
 
     # ---- Scoring Shot Yardage Table (DESCENDING) ---- #
     st.subheader("Scoring Shot Yardage Table")
