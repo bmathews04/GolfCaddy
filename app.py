@@ -257,6 +257,7 @@ def main():
     df_scoring = df_scoring[["carry", "club", "shot_type", "trajectory"]]
     df_scoring.columns = ["Carry (yds)", "Club", "Shot Type", "Trajectory"]
     df_scoring = df_scoring.sort_values("Carry (yds)", ascending=False)
+    df_scoring = df_scoring.reset_index(drop=True)   # 👈 REMOVE LEFT INDEX COLUMN
     st.dataframe(df_scoring, use_container_width=True)
 
     # ---- Full Bag Yardage Table (DESCENDING) ---- #
@@ -266,6 +267,7 @@ def main():
     df_full["Carry (yds)"] = df_full["Carry (yds)"].round(1)
     df_full["Total (yds)"] = df_full["Total (yds)"].round(1)
     df_full = df_full.sort_values("Carry (yds)", ascending=False)
+    df_full = df_full.reset_index(drop=True)   # 👈 REMOVE INDEX COLUMN
     st.dataframe(df_full, use_container_width=True)
 
     # ---- Definitions ---- #
