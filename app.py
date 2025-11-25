@@ -98,6 +98,23 @@ def get_strategy_penalty_scale(strategy_label: str) -> float:
     return 1.0  # balanced
 
 
+def get_dispersion_sigma(category: str) -> float:
+    """
+    Approximate one-standard-deviation distance spread (yards)
+    by club category. These are generic averages, not user-specific.
+    """
+    if category == "scoring_wedge":
+        return 5.0
+    if category == "short_iron":
+        return 7.0
+    if category == "mid_iron":
+        return 8.0
+    if category == "long":
+        return 10.0
+    # default catch-all
+    return 7.0
+
+
 def compute_roll_yards(shot: dict, green_firmness_label: str) -> float:
     """Approximate roll-out based on trajectory and green firmness."""
     firmness = green_firmness_label.lower()
@@ -169,7 +186,7 @@ def build_all_candidate_shots(driver_speed_mph: float):
       - All defined scoring wedge shots
 
     Each shot has:
-      club, shot_type, trajectory, carry, category, is_scoring
+      club, shot_type, trajectory, carry, category, is_scoring, sigma
     """
     scoring_shots = build_scoring_shots(driver_speed_mph)
     full_bag = build_full_bag(driver_speed_mph)
@@ -192,6 +209,8 @@ def build_all_candidate_shots(driver_speed_mph: float):
         else:
             category = "short_iron"
 
+        sigma = get_dispersion_sigma(category)
+
         all_shots.append(
             {
                 "club": club,
@@ -200,16 +219,20 @@ def build_all_candidate_shots(driver_speed_mph: float):
                 "carry": row["Carry (yds)"],
                 "category": category,
                 "is_scoring": False,
+                "sigma": sigma,
             }
         )
 
-    # 2) Add scoring wedge shots (with category info)
+    # 2) Add scoring wedge shots (with category + sigma)
     for s in scoring_shots:
+        category = "scoring_wedge"
+        sigma = get_dispersion_sigma(category)
         all_shots.append(
             {
                 **s,
-                "category": "scoring_wedge",
+                "category": category,
                 "is_scoring": True,
+                "sigma": sigma,
             }
         )
 
@@ -231,10 +254,7 @@ def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> f
 
     # Scale wind effect based on shot length
     scale = target / 150.0
-    if scale < 0.5:
-        scale = 0.5
-    elif scale > 1.2:
-        scale = 1.2
+    scale = max(0.5, min(scale, 1.2))
 
     adjusted = target
     wd = wind_dir.lower()
@@ -290,31 +310,36 @@ def apply_lie(target: float, lie_label: str) -> float:
 
 def shot_score(
     target_total: float,
+    total: float,
     shot: dict,
     short_trouble_label: str,
     long_trouble_label: str,
-    green_firmness_label: str,
     strategy_label: str,
 ) -> float:
     """
     Lower = better.
-    Base term is distance difference weighted by trouble risk,
+    Base term is distance difference weighted by trouble risk and dispersion,
     then we add 'golf-smart' penalties scaled by strategy style.
     """
-    carry = shot["carry"]
-    roll = compute_roll_yards(shot, green_firmness_label)
-    total = carry + roll
-
     diff = abs(total - target_total)
 
     # Asymmetric risk: short vs long
     short_mult = get_trouble_mult(short_trouble_label)
     long_mult = get_trouble_mult(long_trouble_label)
 
+    sigma = shot.get("sigma", 7.0)
+
+    # Extra risk if dispersion is wide and there's trouble in that direction
+    risk_scale = 1.0
+    if total < target_total and short_trouble_label != "None":
+        risk_scale += sigma / 20.0  # bigger sigma => heavier penalty
+    elif total > target_total and long_trouble_label != "None":
+        risk_scale += sigma / 20.0
+
     if total < target_total:
-        effective_diff = diff * short_mult
+        effective_diff = diff * short_mult * risk_scale
     else:
-        effective_diff = diff * long_mult
+        effective_diff = diff * long_mult * risk_scale
 
     # Additional club / shot-type preferences
     category = shot.get("category", "")
@@ -374,10 +399,10 @@ def recommend_shots(
         total = carry + roll
         sc = shot_score(
             target_total,
+            total,
             s,
             short_trouble_label,
             long_trouble_label,
-            green_firmness_label,
             strategy_label,
         )
         scored.append(
@@ -408,12 +433,16 @@ def explain_shot_choice(
     carry = shot["carry"]
     total = shot["total"]
     diff = shot["diff"]
+    sigma = shot.get("sigma")
 
     base = (
         f"Target plays ~{target_total:.0f} yds. "
         f"{club} {shot_type} is expected to carry about {carry:.0f} yds "
         f"and play out to ~{total:.0f} yds (off by {diff:.1f} yds). "
     )
+
+    if sigma is not None:
+        base += f"Typical distance spread for this type of shot is about ±{sigma:.0f} yds. "
 
     firm = green_firmness_label.lower()
     short_t = short_trouble_label.lower()
@@ -422,13 +451,13 @@ def explain_shot_choice(
 
     # Mention roll / firmness logic
     if "firm" in firm:
-        base += "On a firm green this shot will release a bit, so we're factoring in some roll. "
+        base += "On a firm green this shot will release more, so we're factoring in extra roll. "
     elif "soft" in firm:
         base += "On a soft green the ball should stop closer to its carry distance. "
 
     # Trouble-aware explanation
     if total >= target_total and short_t.startswith("severe"):
-        base += "There is severe trouble short, so this option slightly favors being past the front edge. "
+        base += "There is severe trouble short, so this option slightly favors finishing past the front edge. "
     if total <= target_total and long_t.startswith("severe"):
         base += "There is severe trouble long, so this option biases slightly short of the pin. "
 
@@ -470,14 +499,45 @@ def main():
     driver_speed = st.slider("Current Driver Speed (mph)", 90, 115, 100)
     all_shots, scoring_shots, full_bag = build_all_candidate_shots(driver_speed)
 
-    # Target distance (plays as total)
-    target = st.number_input(
+    # Target distance (pin yardage)
+    target_pin = st.number_input(
         "Target Distance to Pin (yards)",
         min_value=10.0,
         max_value=300.0,
         value=150.0,
         step=1.0,
     )
+
+    # Optional safe center target using front/back of green
+    use_center = False
+    front_yards = 0.0
+    back_yards = 0.0
+    with st.expander("Advanced Target Options (Optional)"):
+        use_center = st.checkbox(
+            "Use front/back of green to aim at safe center", value=False
+        )
+        if use_center:
+            colf, colb = st.columns(2)
+            with colf:
+                front_yards = st.number_input(
+                    "Front of green (yards)",
+                    min_value=0.0,
+                    max_value=400.0,
+                    value=0.0,
+                    step=1.0,
+                )
+            with colb:
+                back_yards = st.number_input(
+                    "Back of green (yards)",
+                    min_value=0.0,
+                    max_value=400.0,
+                    value=0.0,
+                    step=1.0,
+                )
+            st.caption(
+                "If both front and back are > 0 and back > front, "
+                "recommendations will target the center of the green."
+            )
 
     # Wind / lie / elevation inputs
     col1, col2, col3 = st.columns(3)
@@ -503,7 +563,7 @@ def main():
          "Slight Downhill", "Moderate Downhill"],
     )
 
-    # New: Trouble, firmness, strategy
+    # Trouble, firmness, strategy
     col4, col5, col6 = st.columns(3)
     with col4:
         trouble_short_label = st.selectbox(
@@ -532,12 +592,30 @@ def main():
     lie = lie_label.lower()
 
     if st.button("Suggest Shots"):
+        # Decide raw target (pin vs center of green)
+        raw_target = target_pin
+        using_center = False
+        if (
+            use_center
+            and front_yards > 0
+            and back_yards > front_yards
+        ):
+            raw_target = (front_yards + back_yards) / 2.0
+            using_center = True
+
         # Adjust the target for environment to get "plays as" distance
-        after_wind = adjust_for_wind(target, wind_dir, wind_strength)
+        after_wind = adjust_for_wind(raw_target, wind_dir, wind_strength)
         after_elev = apply_elevation(after_wind, elevation_label)
         final_target = apply_lie(after_elev, lie)
 
         st.markdown(f"### Adjusted Target (plays as): **{final_target:.1f} yds**")
+        if using_center:
+            st.caption(
+                f"Using safe center of green: front {front_yards:.0f} yds, "
+                f"back {back_yards:.0f} yds, center {raw_target:.0f} yds."
+            )
+        else:
+            st.caption("Using pin yardage as the target.")
 
         best3 = recommend_shots(
             final_target,
@@ -565,6 +643,26 @@ def main():
                     strategy_label,
                 )
             )
+
+        # ---- Dispersion visualization for recommended shots ---- #
+        st.subheader("Dispersion Preview (Recommended Shots)")
+        disp_rows = []
+        for s in best3:
+            sigma = s.get("sigma", 7.0)
+            disp_rows.append(
+                {
+                    "Shot": f"{s['club']} {s['shot_type']}",
+                    "Expected Total (yds)": round(s["total"], 1),
+                    "-1σ (yds)": round(s["total"] - sigma, 1),
+                    "+1σ (yds)": round(s["total"] + sigma, 1),
+                }
+            )
+        df_disp = pd.DataFrame(disp_rows)
+        st.dataframe(df_disp, use_container_width=True)
+        st.caption("±1σ shows an approximate distance range you can expect for each shot.")
+
+        # Simple bar chart of expected total distances
+        st.bar_chart(df_disp.set_index("Shot")[["Expected Total (yds)"]])
 
     # ---- Scoring Shot Yardage Table (DESCENDING) ---- #
     st.subheader("Scoring Shot Yardage Table")
@@ -639,6 +737,12 @@ def main():
             "- **Conservative (Par-focused)**: Heavier weighting on safety, avoids high-risk misses.\n"
             "- **Balanced**: Mix of safety and proximity.\n"
             "- **Aggressive (Pin-seeking)**: More weight on getting close to the pin, tolerates more risk."
+        )
+
+        st.markdown("**Safe Center Target**")
+        st.markdown(
+            "If you provide front and back yardages for the green, the app can aim at the "
+            "center instead of the exact pin, which is how most tour players manage risk."
         )
 
 
