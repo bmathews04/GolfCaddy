@@ -1,5 +1,3 @@
-# strokes_gained_engine.py
-
 import math
 import random
 
@@ -112,6 +110,7 @@ def expected_strokes_from_distance(distance_yards: float, surface: str) -> float
 def get_lateral_sigma(category: str) -> float:
     """
     Rough lateral dispersion (yards) for each club category before skill scaling.
+    These are generic averages and can be tuned later.
     """
     c = category.lower()
     if c == "long":
@@ -165,6 +164,8 @@ def simulate_expected_strokes_for_shot(
     trouble_long_label: str,
     skill_factor: float = 1.0,
     n_sim: int = 200,
+    pin_lateral_offset: float = 0.0,
+    green_width: float = 0.0,
 ) -> tuple[float, float]:
     """
     Monte Carlo simulation for expected strokes from this shot choice.
@@ -176,12 +177,16 @@ def simulate_expected_strokes_for_shot(
           'category': club category ('long', 'mid_iron', 'short_iron', 'scoring_wedge')
       - start_distance_yards: distance from hole before the shot
       - start_surface: 'fairway', 'light_rough', 'heavy_rough'
-      - target_distance_yards: geometric distance to the hole (pin or green center)
+      - target_distance_yards: geometric distance to the hole (pin or center)
       - front_yards, back_yards: front/back of green (yards). If invalid, a virtual
         green is constructed around the target distance.
       - trouble_short_label / trouble_long_label: 'None', 'Mild', 'Severe'
       - skill_factor: scales dispersion (1.0 = neutral, >1 = more scatter, <1 = tighter)
       - n_sim: number of random outcomes to simulate
+      - pin_lateral_offset: lateral offset of the pin from green center (yards).
+        Negative = left, positive = right.
+      - green_width: total left-right width of the green (yards). If 0, a default
+        half-width is assumed.
 
     Returns:
       (baseline_expected_strokes, expected_strokes_if_played)
@@ -189,13 +194,11 @@ def simulate_expected_strokes_for_shot(
     Strokes gained for this shot choice:
       SG = baseline_expected_strokes - expected_strokes_if_played
     """
-    # Seed for reproducibility per call (optional: comment out if you want randomness each run)
-    random.seed(42)
 
     # Baseline from starting position
     baseline = expected_strokes_from_distance(start_distance_yards, start_surface)
 
-    # Green model
+    # Green model (front/back)
     if front_yards <= 0 or back_yards <= front_yards:
         # Virtual green around target
         green_front = target_distance_yards - 7.0
@@ -205,9 +208,11 @@ def simulate_expected_strokes_for_shot(
         green_back = back_yards
 
     green_center = 0.5 * (green_front + green_back)
-    green_half_width = 10.0  # lateral radius in yards assumed
 
-    # Longitudinal dispersion (already scaled by your logic if desired)
+    # Lateral half-width: use real width if provided, otherwise assume 10 yds
+    green_half_width = green_width / 2.0 if green_width > 0 else 10.0
+
+    # Longitudinal dispersion (distance)
     sigma_long = shot.get("sigma", 7.0) * skill_factor
 
     # Lateral dispersion by category
@@ -220,15 +225,16 @@ def simulate_expected_strokes_for_shot(
     for _ in range(n_sim):
         base_total = shot["total"]
 
-        # Sample actual distance and lateral offset
+        # Sample actual distance and lateral offset relative to *green center line*
         actual_total = sample_normal(base_total, sigma_long)
         lateral = sample_normal(0.0, sigma_lat)
 
-        # Distance to hole (radial)
-        diff = actual_total - target_distance_yards
-        dist_to_hole_yards = abs(diff)
+        # 2D distance to hole (pin), using pin_lateral_offset
+        dx = actual_total - target_distance_yards            # long/short vs pin
+        dy = lateral - pin_lateral_offset                    # left/right vs pin
+        dist_to_hole_yards = math.sqrt(dx * dx + dy * dy)
 
-        # Now approximate remaining strokes
+        # Initialize remaining strokes for this simulated outcome
         if dist_to_hole_yards <= 0.5:
             # Holed
             rem_strokes = 0.0
@@ -251,7 +257,7 @@ def simulate_expected_strokes_for_shot(
                 )
         else:
             # Longer miss: rough + possible trouble
-            if diff < 0:
+            if dx < 0:
                 # Short miss
                 surface_after = "light_rough"
                 rem_strokes = expected_strokes_from_distance(
@@ -265,6 +271,15 @@ def simulate_expected_strokes_for_shot(
                     dist_to_hole_yards, surface_after
                 )
                 rem_strokes += trouble_penalty(trouble_long_label)
+
+        # Short-side penalty: outside green on the pin side
+        short_side_penalty = 0.0
+        if green_width > 0 and pin_lateral_offset != 0.0:
+            # outside green laterally
+            if abs(lateral) > green_half_width and (lateral * pin_lateral_offset) > 0:
+                short_side_penalty = 0.30  # ~1/3 stroke for being short-sided
+
+        rem_strokes += short_side_penalty
 
         total_strokes = 1.0 + rem_strokes
         expected_list.append(total_strokes)
