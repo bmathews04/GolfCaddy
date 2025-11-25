@@ -9,35 +9,35 @@ BASELINE_DRIVER_SPEED = 100.0  # mph
 FULL_WEDGE_CARRIES = {
     "PW": 121,
     "GW": 107,
-    "SW":  92,
-    "LW":  78,
+    "SW": 92,
+    "LW": 78,
 }
 
 # Full bag baseline at 100 mph driver speed
 # club, ball_speed, launch, spin, carry_center, total_center
 FULL_BAG_BASE = [
-    ("Driver", 148, 13.0,  2500, 233, 253),
-    ("3W",     140, 14.5,  3300, 216, 233),
-    ("3H",     135, 16.0,  3900, 202, 220),
-    ("4i",     128, 14.5,  4600, 182, 194),
-    ("5i",     122, 15.5,  5000, 172, 185),
-    ("6i",     116, 17.0,  5400, 162, 172),
-    ("7i",     110, 18.5,  6200, 151, 161),
-    ("8i",     104, 20.5,  7000, 139, 149),
-    ("9i",      98, 23.0,  7800, 127, 137),
-    ("PW",      92, 28.0,  8500, 118, 124),
-    ("GW",      86, 30.0,  9000, 104, 110),
-    ("SW",      81, 32.0,  9500,  89,  95),
-    ("LW",      75, 34.0, 10500,  75,  81),
+    ("Driver", 148, 13.0, 2500, 233, 253),
+    ("3W",     140, 14.5, 3300, 216, 233),
+    ("3H",     135, 16.0, 3900, 202, 220),
+    ("4i",     128, 14.5, 4600, 182, 194),
+    ("5i",     122, 15.5, 5000, 172, 185),
+    ("6i",     116, 17.0, 5400, 162, 172),
+    ("7i",     110, 18.5, 6200, 151, 161),
+    ("8i",     104, 20.5, 7000, 139, 149),
+    ("9i",      98, 23.0, 7800, 127, 137),
+    ("PW",      92, 28.0, 8500, 118, 124),
+    ("GW",      86, 30.0, 9000, 104, 110),
+    ("SW",      81, 32.0, 9500,  89,  95),
+    ("LW",      75, 34.0,10500,  75,  81),
 ]
 
 # Shot-type multipliers
 SHOT_MULTIPLIERS = {
-    "Full":        1.00,
-    "Choke-Down":  0.94,
-    "3/4":         0.80,
-    "1/2":         0.60,
-    "1/4":         0.40,
+    "Full":       1.00,
+    "Choke-Down": 0.94,
+    "3/4":        0.80,
+    "1/2":        0.60,
+    "1/4":        0.40,
 }
 
 # Scoring shots: (club, shot type, trajectory)
@@ -77,6 +77,7 @@ def scale_value(base_value: float, driver_speed_mph: float) -> float:
     return base_value * (driver_speed_mph / BASELINE_DRIVER_SPEED)
 
 
+@st.cache_data
 def build_scoring_shots(driver_speed_mph: float):
     """All scoring shots (PW–LW + shot types) for given driver speed."""
     shots = []
@@ -94,6 +95,7 @@ def build_scoring_shots(driver_speed_mph: float):
     return shots
 
 
+@st.cache_data
 def build_full_bag(driver_speed_mph: float):
     """Full bag distances for given driver speed."""
     out = []
@@ -109,6 +111,63 @@ def build_full_bag(driver_speed_mph: float):
             }
         )
     return out
+
+
+@st.cache_data
+def build_all_candidate_shots(driver_speed_mph: float):
+    """
+    Return (all_shots, scoring_shots, full_bag).
+
+    all_shots includes:
+      - Full-swing long/mid/short irons + woods
+      - All defined scoring wedge shots
+
+    Each shot has:
+      club, shot_type, trajectory, carry, category, is_scoring
+    """
+    scoring_shots = build_scoring_shots(driver_speed_mph)
+    full_bag = build_full_bag(driver_speed_mph)
+
+    long_game = {"Driver", "3W", "3H"}
+    wedges = set(FULL_WEDGE_CARRIES.keys())
+
+    all_shots = []
+
+    # 1) Add non-wedge full-swing clubs
+    for row in full_bag:
+        club = row["Club"]
+        if club in wedges:
+            continue
+
+        if club in long_game:
+            category = "long"
+        elif club in {"4i", "5i", "6i"}:
+            category = "mid_iron"
+        else:
+            category = "short_iron"
+
+        all_shots.append(
+            {
+                "club": club,
+                "shot_type": "Full",
+                "trajectory": "Stock",
+                "carry": row["Carry (yds)"],
+                "category": category,
+                "is_scoring": False,
+            }
+        )
+
+    # 2) Add scoring wedge shots (with category info)
+    for s in scoring_shots:
+        all_shots.append(
+            {
+                **s,
+                "category": "scoring_wedge",
+                "is_scoring": True,
+            }
+        )
+
+    return all_shots, scoring_shots, full_bag
 
 
 def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> float:
@@ -138,7 +197,6 @@ def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> f
         adjusted -= wind_mph * 0.4 * scale
     elif wd == "cross":
         adjusted += wind_mph * 0.1 * scale
-    # "none" or anything else: no change
 
     return adjusted
 
@@ -180,11 +238,104 @@ def apply_lie(target: float, lie_label: str) -> float:
     return target * mult
 
 
-def recommend_shots(target_carry: float, scoring_shots, top_n: int = 3):
-    """Return top_n scoring shots closest to target carry."""
-    for s in scoring_shots:
-        s["diff"] = abs(s["carry"] - target_carry)
-    return sorted(scoring_shots, key=lambda s: s["diff"])[:top_n]
+def shot_score(target_carry: float, shot: dict) -> float:
+    """
+    Lower = better.
+    Base term is distance difference; then we add small penalties
+    to make the choice more 'golf-smart'.
+    """
+    diff = abs(shot["carry"] - target_carry)
+    penalty = 0.0
+
+    category = shot.get("category", "")
+    shot_type = shot.get("shot_type", "Full")
+    swing_mult = SHOT_MULTIPLIERS.get(shot_type, 1.0)
+
+    # 1) Club-type preferences by distance
+    if target_carry < 60:
+        # Very short: strongly prefer wedges
+        if category != "scoring_wedge":
+            penalty += 40.0
+    elif target_carry < 120:
+        # Classic scoring wedge zone
+        if category != "scoring_wedge":
+            penalty += 5.0
+    elif target_carry < 190:
+        # Mid-iron zone, avoid long game or weird wedges
+        if category in ("long", "scoring_wedge"):
+            penalty += 8.0
+    else:
+        # Long game territory
+        if category != "long":
+            penalty += 12.0
+
+    # 2) Prefer fuller swings for longer shots
+    if target_carry > 100 and swing_mult < 0.8:
+        # discourage 1/2, 1/4 wedges on 150-yd shots
+        penalty += 8.0
+
+    # 3) Prefer less-than-full shots for short-ish wedges
+    if target_carry < 90 and swing_mult >= 0.94 and category == "scoring_wedge":
+        # small nudge away from nuking a full wedge on a 70-yd shot
+        penalty += 3.0
+
+    return diff + penalty
+
+
+def recommend_shots(target_carry: float, candidates, top_n: int = 3):
+    """Return top_n shots sorted by 'golf-smart' score."""
+    scored = []
+    for s in candidates:
+        sc = shot_score(target_carry, s)
+        scored.append(
+            {
+                **s,
+                "diff": abs(s["carry"] - target_carry),
+                "score": sc,
+            }
+        )
+    scored.sort(key=lambda x: x["score"])
+    return scored[:top_n]
+
+
+def explain_shot_choice(shot: dict, target_carry: float) -> str:
+    """Generate a human-friendly explanation for why this shot was chosen."""
+    club = shot["club"]
+    shot_type = shot["shot_type"]
+    category = shot.get("category", "")
+    carry = shot["carry"]
+    diff = shot["diff"]
+
+    base = f"Target is ~{target_carry:.0f} yds, this shot carries about {carry:.0f} yds (off by {diff:.1f} yds). "
+
+    # Scoring wedges
+    if category == "scoring_wedge":
+        if target_carry < 60:
+            return base + "Short distance: using a soft wedge keeps it controlled around the green."
+        elif target_carry < 90:
+            return base + "Inside wedge range: a partial wedge gives better distance and spin control."
+        elif target_carry < 120:
+            return base + "This is classic scoring distance: a controlled wedge is preferred over an iron."
+        else:
+            return base + "Even though this is longer, this wedge option still fits the distance well."
+
+    # Short irons
+    if category == "short_iron":
+        return base + "Short iron is ideal here: high enough flight with plenty of control for this distance."
+
+    # Mid irons
+    if category == "mid_iron":
+        return base + "Mid-iron suits this range: enough carry without forcing a long club or over-swinging."
+
+    # Long game
+    if category == "long":
+        if target_carry > 200:
+            return base + "Distance is long enough to justify a wood/hybrid/driver; this is the most efficient option."
+        else:
+            return base + "This club reaches the number while avoiding over-swinging a shorter iron."
+
+    # Fallback
+    return base + "This option best matches the distance while keeping the swing and club choice reasonable."
 
 
 # ---- STREAMLIT APP ---- #
@@ -194,8 +345,7 @@ def main():
 
     # Driver speed and precomputed data
     driver_speed = st.slider("Current Driver Speed (mph)", 90, 115, 100)
-    scoring_shots = build_scoring_shots(driver_speed)
-    full_bag = build_full_bag(driver_speed)
+    all_shots, scoring_shots, full_bag = build_all_candidate_shots(driver_speed)
 
     # Target carry
     target = st.number_input(
@@ -242,7 +392,7 @@ def main():
 
         st.markdown(f"### Adjusted Target: **{final_target:.1f} yds**")
 
-        best3 = recommend_shots(final_target, scoring_shots, top_n=3)
+        best3 = recommend_shots(final_target, all_shots, top_n=3)
 
         st.subheader("Recommended Options")
         for i, s in enumerate(best3, start=1):
@@ -250,6 +400,7 @@ def main():
                 f"**{i}. {s['club']}** — {s['shot_type']} | {s['trajectory']}  "
                 f"(Carry ≈ {s['carry']:.1f} yds, diff {s['diff']:.1f})"
             )
+            st.caption(explain_shot_choice(s, final_target))
 
     # ---- Scoring Shot Yardage Table (DESCENDING) ---- #
     st.subheader("Scoring Shot Yardage Table")
@@ -257,7 +408,7 @@ def main():
     df_scoring = df_scoring[["carry", "club", "shot_type", "trajectory"]]
     df_scoring.columns = ["Carry (yds)", "Club", "Shot Type", "Trajectory"]
     df_scoring = df_scoring.sort_values("Carry (yds)", ascending=False)
-    df_scoring = df_scoring.reset_index(drop=True)   # 👈 REMOVE LEFT INDEX COLUMN
+    df_scoring = df_scoring.reset_index(drop=True)
     st.dataframe(df_scoring, use_container_width=True)
 
     # ---- Full Bag Yardage Table (DESCENDING) ---- #
@@ -267,7 +418,7 @@ def main():
     df_full["Carry (yds)"] = df_full["Carry (yds)"].round(1)
     df_full["Total (yds)"] = df_full["Total (yds)"].round(1)
     df_full = df_full.sort_values("Carry (yds)", ascending=False)
-    df_full = df_full.reset_index(drop=True)   # 👈 REMOVE INDEX COLUMN
+    df_full = df_full.reset_index(drop=True)
     st.dataframe(df_full, use_container_width=True)
 
     # ---- Definitions ---- #
