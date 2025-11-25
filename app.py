@@ -982,11 +982,11 @@ def main():
         start_distance_yards = final_target_biased
 
         front_for_sg = (
-        front_yards if (mode == "Advanced" and use_center and front_yards > 0) else 0.0
-)
-back_for_sg = (
-    back_yards if (mode == "Advanced" and use_center and back_yards > front_for_sg) else 0.0
-)
+            front_yards if (mode == "Advanced" and use_center and front_yards > 0) else 0.0
+        )
+        back_for_sg = (
+            back_yards if (mode == "Advanced" and use_center and back_yards > front_for_sg) else 0.0
+        )
 
             best3 = recommend_shots_with_sg(
                 target_total=final_target_biased,
