@@ -70,12 +70,58 @@ WIND_STRENGTH_MAP = {
     "heavy":  20,
 }
 
-# ---- CALCULATION FUNCTIONS ---- #
+
+# ---- BASIC HELPERS ---- #
 
 def scale_value(base_value: float, driver_speed_mph: float) -> float:
     """Scale a baseline value linearly with driver speed."""
     return base_value * (driver_speed_mph / BASELINE_DRIVER_SPEED)
 
+
+def get_trouble_mult(label: str) -> float:
+    """Convert trouble label to a risk multiplier."""
+    l = label.lower()
+    if l.startswith("mild"):
+        return 1.5
+    if l.startswith("severe"):
+        return 2.5
+    return 1.0
+
+
+def get_strategy_penalty_scale(strategy_label: str) -> float:
+    """How strongly to apply 'safety' penalties vs pure distance."""
+    s = strategy_label.lower()
+    if s.startswith("conservative"):
+        return 1.3
+    if s.startswith("aggressive"):
+        return 0.7
+    return 1.0  # balanced
+
+
+def compute_roll_yards(shot: dict, green_firmness_label: str) -> float:
+    """Approximate roll-out based on trajectory and green firmness."""
+    firmness = green_firmness_label.lower()
+    if firmness.startswith("soft"):
+        base_roll = 1.5
+    elif firmness.startswith("firm"):
+        base_roll = 8.0
+    else:
+        base_roll = 4.0
+
+    traj = shot.get("trajectory", "Medium")
+    traj_roll_factor = {
+        "High":         0.3,
+        "Medium-High":  0.5,
+        "Medium":       0.7,
+        "Medium-Low":   0.9,
+        "Low":          1.1,
+        "Stock":        0.8,
+    }
+    factor = traj_roll_factor.get(traj, 0.7)
+    return base_roll * factor
+
+
+# ---- DATA BUILDERS ---- #
 
 @st.cache_data
 def build_scoring_shots(driver_speed_mph: float):
@@ -170,6 +216,8 @@ def build_all_candidate_shots(driver_speed_mph: float):
     return all_shots, scoring_shots, full_bag
 
 
+# ---- ADJUSTMENT MODELS ---- #
+
 def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> float:
     """
     Tuned wind model:
@@ -238,29 +286,53 @@ def apply_lie(target: float, lie_label: str) -> float:
     return target * mult
 
 
-def shot_score(target_carry: float, shot: dict) -> float:
+# ---- SCORING & RECOMMENDATION ---- #
+
+def shot_score(
+    target_total: float,
+    shot: dict,
+    short_trouble_label: str,
+    long_trouble_label: str,
+    green_firmness_label: str,
+    strategy_label: str,
+) -> float:
     """
     Lower = better.
-    Base term is distance difference; then we add small penalties
-    to make the choice more 'golf-smart'.
+    Base term is distance difference weighted by trouble risk,
+    then we add 'golf-smart' penalties scaled by strategy style.
     """
-    diff = abs(shot["carry"] - target_carry)
-    penalty = 0.0
+    carry = shot["carry"]
+    roll = compute_roll_yards(shot, green_firmness_label)
+    total = carry + roll
 
+    diff = abs(total - target_total)
+
+    # Asymmetric risk: short vs long
+    short_mult = get_trouble_mult(short_trouble_label)
+    long_mult = get_trouble_mult(long_trouble_label)
+
+    if total < target_total:
+        effective_diff = diff * short_mult
+    else:
+        effective_diff = diff * long_mult
+
+    # Additional club / shot-type preferences
     category = shot.get("category", "")
     shot_type = shot.get("shot_type", "Full")
     swing_mult = SHOT_MULTIPLIERS.get(shot_type, 1.0)
 
+    penalty = 0.0
+
     # 1) Club-type preferences by distance
-    if target_carry < 60:
+    if target_total < 60:
         # Very short: strongly prefer wedges
         if category != "scoring_wedge":
             penalty += 40.0
-    elif target_carry < 120:
+    elif target_total < 120:
         # Classic scoring wedge zone
         if category != "scoring_wedge":
             penalty += 5.0
-    elif target_carry < 190:
+    elif target_total < 190:
         # Mid-iron zone, avoid long game or weird wedges
         if category in ("long", "scoring_wedge"):
             penalty += 8.0
@@ -270,27 +342,50 @@ def shot_score(target_carry: float, shot: dict) -> float:
             penalty += 12.0
 
     # 2) Prefer fuller swings for longer shots
-    if target_carry > 100 and swing_mult < 0.8:
+    if target_total > 100 and swing_mult < 0.8:
         # discourage 1/2, 1/4 wedges on 150-yd shots
         penalty += 8.0
 
     # 3) Prefer less-than-full shots for short-ish wedges
-    if target_carry < 90 and swing_mult >= 0.94 and category == "scoring_wedge":
+    if target_total < 90 and swing_mult >= 0.94 and category == "scoring_wedge":
         # small nudge away from nuking a full wedge on a 70-yd shot
         penalty += 3.0
 
-    return diff + penalty
+    # Strategy style: how strong are the safety penalties?
+    penalty_scale = get_strategy_penalty_scale(strategy_label)
+
+    return effective_diff + penalty * penalty_scale
 
 
-def recommend_shots(target_carry: float, candidates, top_n: int = 3):
-    """Return top_n shots sorted by 'golf-smart' score."""
+def recommend_shots(
+    target_total: float,
+    candidates,
+    short_trouble_label: str,
+    long_trouble_label: str,
+    green_firmness_label: str,
+    strategy_label: str,
+    top_n: int = 3,
+):
+    """Return top_n shots sorted by 'tour-brain' score."""
     scored = []
     for s in candidates:
-        sc = shot_score(target_carry, s)
+        carry = s["carry"]
+        roll = compute_roll_yards(s, green_firmness_label)
+        total = carry + roll
+        sc = shot_score(
+            target_total,
+            s,
+            short_trouble_label,
+            long_trouble_label,
+            green_firmness_label,
+            strategy_label,
+        )
         scored.append(
             {
                 **s,
-                "diff": abs(s["carry"] - target_carry),
+                "carry": carry,
+                "total": total,
+                "diff": abs(total - target_total),
                 "score": sc,
             }
         )
@@ -298,58 +393,86 @@ def recommend_shots(target_carry: float, candidates, top_n: int = 3):
     return scored[:top_n]
 
 
-def explain_shot_choice(shot: dict, target_carry: float) -> str:
+def explain_shot_choice(
+    shot: dict,
+    target_total: float,
+    short_trouble_label: str,
+    long_trouble_label: str,
+    green_firmness_label: str,
+    strategy_label: str,
+) -> str:
     """Generate a human-friendly explanation for why this shot was chosen."""
     club = shot["club"]
     shot_type = shot["shot_type"]
     category = shot.get("category", "")
     carry = shot["carry"]
+    total = shot["total"]
     diff = shot["diff"]
 
-    base = f"Target is ~{target_carry:.0f} yds, this shot carries about {carry:.0f} yds (off by {diff:.1f} yds). "
+    base = (
+        f"Target plays ~{target_total:.0f} yds. "
+        f"{club} {shot_type} is expected to carry about {carry:.0f} yds "
+        f"and play out to ~{total:.0f} yds (off by {diff:.1f} yds). "
+    )
 
-    # Scoring wedges
+    firm = green_firmness_label.lower()
+    short_t = short_trouble_label.lower()
+    long_t = long_trouble_label.lower()
+    strat = strategy_label.lower()
+
+    # Mention roll / firmness logic
+    if "firm" in firm:
+        base += "On a firm green this shot will release a bit, so we're factoring in some roll. "
+    elif "soft" in firm:
+        base += "On a soft green the ball should stop closer to its carry distance. "
+
+    # Trouble-aware explanation
+    if total >= target_total and short_t.startswith("severe"):
+        base += "There is severe trouble short, so this option slightly favors being past the front edge. "
+    if total <= target_total and long_t.startswith("severe"):
+        base += "There is severe trouble long, so this option biases slightly short of the pin. "
+
+    # Strategy style
+    if strat.startswith("conservative"):
+        base += "Strategy is conservative, so we're prioritizing safety over being perfect on the number. "
+    elif strat.startswith("aggressive"):
+        base += "Strategy is aggressive, so we're allowing a tighter miss window around the pin. "
+
+    # Category-specific flavor
     if category == "scoring_wedge":
-        if target_carry < 60:
-            return base + "Short distance: using a soft wedge keeps it controlled around the green."
-        elif target_carry < 90:
-            return base + "Inside wedge range: a partial wedge gives better distance and spin control."
-        elif target_carry < 120:
-            return base + "This is classic scoring distance: a controlled wedge is preferred over an iron."
+        if target_total < 60:
+            base += "It's a very short shot, so a soft wedge keeps distance and spin under control."
+        elif target_total < 90:
+            base += "This is inside classic wedge distance, so a partial wedge offers the best control."
+        elif target_total < 120:
+            base += "This is prime scoring range, so a wedge is preferred over an iron for closer proximity."
         else:
-            return base + "Even though this is longer, this wedge option still fits the distance well."
-
-    # Short irons
-    if category == "short_iron":
-        return base + "Short iron is ideal here: high enough flight with plenty of control for this distance."
-
-    # Mid irons
-    if category == "mid_iron":
-        return base + "Mid-iron suits this range: enough carry without forcing a long club or over-swinging."
-
-    # Long game
-    if category == "long":
-        if target_carry > 200:
-            return base + "Distance is long enough to justify a wood/hybrid/driver; this is the most efficient option."
+            base += "Even though it's a bit longer, this wedge setup still matches the number well."
+    elif category == "short_iron":
+        base += "A short iron gives good height and control for this distance."
+    elif category == "mid_iron":
+        base += "A mid-iron is ideal here—enough carry without forcing a long club."
+    elif category == "long":
+        if target_total > 200:
+            base += "Distance is long enough that a wood/hybrid/driver is the most efficient choice."
         else:
-            return base + "This club reaches the number while avoiding over-swinging a shorter iron."
+            base += "This long club reaches the number without over-swinging a shorter iron."
 
-    # Fallback
-    return base + "This option best matches the distance while keeping the swing and club choice reasonable."
+    return base
 
 
 # ---- STREAMLIT APP ---- #
 
 def main():
-    st.title("Golf Shot Selector")
+    st.title("Golf Shot Selector (Tour Brain Mode)")
 
     # Driver speed and precomputed data
     driver_speed = st.slider("Current Driver Speed (mph)", 90, 115, 100)
     all_shots, scoring_shots, full_bag = build_all_candidate_shots(driver_speed)
 
-    # Target carry
+    # Target distance (plays as total)
     target = st.number_input(
-        "Target Carry Distance (yards)",
+        "Target Distance to Pin (yards)",
         min_value=10.0,
         max_value=300.0,
         value=150.0,
@@ -380,27 +503,68 @@ def main():
          "Slight Downhill", "Moderate Downhill"],
     )
 
+    # New: Trouble, firmness, strategy
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        trouble_short_label = st.selectbox(
+            "Trouble Short of Target?",
+            ["None", "Mild", "Severe"],
+        )
+    with col5:
+        trouble_long_label = st.selectbox(
+            "Trouble Long of Target?",
+            ["None", "Mild", "Severe"],
+        )
+    with col6:
+        green_firmness_label = st.selectbox(
+            "Green Firmness",
+            ["Soft", "Medium", "Firm"],
+        )
+
+    strategy_label = st.selectbox(
+        "Strategy",
+        ["Balanced", "Conservative (Par-focused)", "Aggressive (Pin-seeking)"],
+    )
+
     # Normalize for logic
     wind_dir = wind_dir_label.lower()
     wind_strength = wind_strength_label.lower()
     lie = lie_label.lower()
 
     if st.button("Suggest Shots"):
+        # Adjust the target for environment to get "plays as" distance
         after_wind = adjust_for_wind(target, wind_dir, wind_strength)
         after_elev = apply_elevation(after_wind, elevation_label)
         final_target = apply_lie(after_elev, lie)
 
-        st.markdown(f"### Adjusted Target: **{final_target:.1f} yds**")
+        st.markdown(f"### Adjusted Target (plays as): **{final_target:.1f} yds**")
 
-        best3 = recommend_shots(final_target, all_shots, top_n=3)
+        best3 = recommend_shots(
+            final_target,
+            all_shots,
+            trouble_short_label,
+            trouble_long_label,
+            green_firmness_label,
+            strategy_label,
+            top_n=3,
+        )
 
         st.subheader("Recommended Options")
         for i, s in enumerate(best3, start=1):
             st.markdown(
                 f"**{i}. {s['club']}** — {s['shot_type']} | {s['trajectory']}  "
-                f"(Carry ≈ {s['carry']:.1f} yds, diff {s['diff']:.1f})"
+                f"(Carry ≈ {s['carry']:.1f} yds, plays to ~{s['total']:.1f} yds)"
             )
-            st.caption(explain_shot_choice(s, final_target))
+            st.caption(
+                explain_shot_choice(
+                    s,
+                    final_target,
+                    trouble_short_label,
+                    trouble_long_label,
+                    green_firmness_label,
+                    strategy_label,
+                )
+            )
 
     # ---- Scoring Shot Yardage Table (DESCENDING) ---- #
     st.subheader("Scoring Shot Yardage Table")
@@ -454,6 +618,27 @@ def main():
             "- **Moderate Uphill**: Noticeably uphill (plays ~10 yards longer).\n"
             "- **Slight Downhill**: Target a little lower (plays ~5 yards shorter).\n"
             "- **Moderate Downhill**: Clearly downhill (plays ~10 yards shorter)."
+        )
+
+        st.markdown("**Trouble Short / Long**")
+        st.markdown(
+            "- **None**: No serious penalty.\n"
+            "- **Mild**: Bunkers or rough that cost a shot but not a disaster.\n"
+            "- **Severe**: Water, OB, or brutal runoffs where a miss is very costly."
+        )
+
+        st.markdown("**Green Firmness**")
+        st.markdown(
+            "- **Soft**: Ball stops close to carry distance.\n"
+            "- **Medium**: Some release after landing.\n"
+            "- **Firm**: Expect noticeable roll-out after landing."
+        )
+
+        st.markdown("**Strategy**")
+        st.markdown(
+            "- **Conservative (Par-focused)**: Heavier weighting on safety, avoids high-risk misses.\n"
+            "- **Balanced**: Mix of safety and proximity.\n"
+            "- **Aggressive (Pin-seeking)**: More weight on getting close to the pin, tolerates more risk."
         )
 
 
