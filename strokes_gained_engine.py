@@ -1,6 +1,17 @@
 import math
 import random
 
+# ============================
+# CONFIG / CONSTANTS
+# ============================
+
+# Penalties for trouble zones
+TROUBLE_MILD_PENALTY = 0.30   # ~1/3 stroke
+TROUBLE_SEVERE_PENALTY = 0.80 # close to 1 stroke
+
+# Short-side penalty when you miss outside the green on the pin side
+SHORT_SIDE_PENALTY_STROKES = 0.30
+
 # ---- Expected Strokes Curves (Simplified) ---- #
 # Distances are in yards, putting distances in feet.
 
@@ -145,9 +156,9 @@ def trouble_penalty(trouble_label: str) -> float:
     """
     t = trouble_label.lower()
     if t.startswith("mild"):
-        return 0.30  # ~ a third of a stroke
+        return TROUBLE_MILD_PENALTY
     if t.startswith("severe"):
-        return 0.80  # close to a full stroke lost
+        return TROUBLE_SEVERE_PENALTY
     return 0.0
 
 
@@ -166,6 +177,7 @@ def simulate_expected_strokes_for_shot(
     n_sim: int = 200,
     pin_lateral_offset: float = 0.0,
     green_width: float = 0.0,
+    seed: int | None = 42,
 ) -> tuple[float, float]:
     """
     Monte Carlo simulation for expected strokes from this shot choice.
@@ -187,6 +199,7 @@ def simulate_expected_strokes_for_shot(
         Negative = left, positive = right.
       - green_width: total left-right width of the green (yards). If 0, a default
         half-width is assumed.
+      - seed: if not None, used to seed the RNG for reproducible simulations.
 
     Returns:
       (baseline_expected_strokes, expected_strokes_if_played)
@@ -194,6 +207,10 @@ def simulate_expected_strokes_for_shot(
     Strokes gained for this shot choice:
       SG = baseline_expected_strokes - expected_strokes_if_played
     """
+
+    # Optional seeding for reproducible results
+    if seed is not None:
+        random.seed(seed)
 
     # Baseline from starting position
     baseline = expected_strokes_from_distance(start_distance_yards, start_surface)
@@ -277,7 +294,7 @@ def simulate_expected_strokes_for_shot(
         if green_width > 0 and pin_lateral_offset != 0.0:
             # outside green laterally
             if abs(lateral) > green_half_width and (lateral * pin_lateral_offset) > 0:
-                short_side_penalty = 0.30  # ~1/3 stroke for being short-sided
+                short_side_penalty = SHORT_SIDE_PENALTY_STROKES
 
         rem_strokes += short_side_penalty
 
