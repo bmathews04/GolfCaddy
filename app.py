@@ -699,6 +699,17 @@ def main():
 
     # ---------- CADDY TAB ---------- #
     with tab_caddy:
+        # Mode selector
+        mode = st.radio(
+            "Mode",
+            ["Quick", "Advanced"],
+            horizontal=True,
+            help=(
+                "Quick mode keeps inputs minimal for fast on-course use. "
+                "Advanced mode lets you tweak every detail (trouble, green layout, pin side, tendencies)."
+            ),
+        )
+
         # Core inputs
         pin_col1, pin_col2 = st.columns([2, 1])
         with pin_col1:
@@ -745,141 +756,139 @@ def main():
             )
 
         with col_c:
-            use_auto_strategy = st.checkbox(
-                "Auto-select strategy based on situation",
-                value=True,
-                help="Let Golf Caddy choose Conservative/Balanced/Aggressive "
-                     "based on distance, trouble, and your consistency.",
-            )
-            manual_strategy = st.radio(
-                "Strategy (if not auto)",
-                [STRATEGY_BALANCED, STRATEGY_CONSERVATIVE, STRATEGY_AGGRESSIVE],
-                index=0,
-                help="Conservative favors safety, Aggressive chases pins, Balanced is in between.",
-            )
-            strategy_label = manual_strategy  # may be overridden later
+            if mode == "Advanced":
+                use_auto_strategy = st.checkbox(
+                    "Auto-select strategy based on situation",
+                    value=True,
+                    help="Let Golf Caddy choose Conservative/Balanced/Aggressive "
+                         "based on distance, trouble, and your consistency.",
+                )
+                manual_strategy = st.radio(
+                    "Strategy (if not auto)",
+                    [STRATEGY_BALANCED, STRATEGY_CONSERVATIVE, STRATEGY_AGGRESSIVE],
+                    index=0,
+                    help="Conservative favors safety, Aggressive chases pins, Balanced is in between.",
+                )
+                strategy_label = manual_strategy  # may be overridden later
+            else:
+                # Quick mode: always auto strategy, do not show manual controls
+                use_auto_strategy = True
+                strategy_label = STRATEGY_BALANCED
+                st.markdown("**Strategy**")
+                st.caption("Quick mode uses auto-selected strategy based on distance and situation.")
 
-        # Advanced options
-        with st.expander("Advanced: Green, Trouble, Pin Position & Player Tendencies (Optional)"):
-            st.markdown("**Green Layout & Safe Center**")
-            use_center = st.checkbox(
-                "Aim at the safe center using front/back of green",
-                value=False,
-            )
+        # Advanced options (only shown in Advanced mode)
+        if mode == "Advanced":
+            with st.expander("Advanced: Green, Trouble, Pin Position & Player Tendencies (Optional)"):
+                st.markdown("**Green Layout & Safe Center**")
+                use_center = st.checkbox(
+                    "Aim at the safe center using front/back of green",
+                    value=False,
+                )
 
-            front_yards = 0.0
-            back_yards = 0.0
-            if use_center:
-                colf, colb = st.columns(2)
-                with colf:
-                    front_yards = st.number_input(
-                        "Front of green (yards)",
+                front_yards = 0.0
+                back_yards = 0.0
+                if use_center:
+                    colf, colb = st.columns(2)
+                    with colf:
+                        front_yards = st.number_input(
+                            "Front of green (yards)",
+                            min_value=0.0,
+                            max_value=400.0,
+                            value=0.0,
+                            step=1.0,
+                            help="Distance to the front edge of the green.",
+                        )
+                    with colb:
+                        back_yards = st.number_input(
+                            "Back of green (yards)",
+                            min_value=0.0,
+                            max_value=400.0,
+                            value=0.0,
+                            step=1.0,
+                            help="Distance to the back edge of the green.",
+                        )
+                    st.caption(
+                        "If both front and back are > 0 and back > front, "
+                        "Golf Caddy will target the center of the green instead of the exact pin."
+                    )
+
+                st.markdown("---")
+                st.markdown("**Trouble & Green Firmness**")
+                tcol1, tcol2, tcol3 = st.columns(3)
+                with tcol1:
+                    trouble_short_label = st.selectbox(
+                        "Trouble Short?",
+                        ["None", "Mild", "Severe"],
+                        help="How penal is a miss that finishes short of the target?",
+                    )
+                with tcol2:
+                    trouble_long_label = st.selectbox(
+                        "Trouble Long?",
+                        ["None", "Mild", "Severe"],
+                        help="How penal is a miss that finishes long of the target?",
+                    )
+                with tcol3:
+                    green_firmness_label = st.selectbox(
+                        "Green Firmness",
+                        ["Soft", "Medium", "Firm"],
+                        help="Soft = stops close to carry distance, Firm = more roll-out.",
+                    )
+
+                st.markdown("---")
+                st.markdown("**Pin Lateral Position (Optional)**")
+                pw1, pw2 = st.columns(2)
+                with pw1:
+                    green_width = st.number_input(
+                        "Green width (yards, left-to-right)",
                         min_value=0.0,
-                        max_value=400.0,
+                        max_value=60.0,
                         value=0.0,
                         step=1.0,
-                        help="Distance to the front edge of the green.",
+                        help="Approximate green width. Leave 0 if you do not want lateral modeling.",
                     )
-                with colb:
-                    back_yards = st.number_input(
-                        "Back of green (yards)",
-                        min_value=0.0,
-                        max_value=400.0,
-                        value=0.0,
-                        step=1.0,
-                        help="Distance to the back edge of the green.",
+                with pw2:
+                    pin_side = st.selectbox(
+                        "Pin side",
+                        ["Center", "Left", "Right"],
+                        help="Approximate lateral pin location on the green.",
                     )
-                st.caption(
-                    "If both front and back are > 0 and back > front, "
-                    "Golf Caddy will target the center of the green instead of the exact pin."
-                )
 
-            st.markdown("---")
-            st.markdown("**Trouble & Green Firmness**")
-            tcol1, tcol2, tcol3 = st.columns(3)
-            with tcol1:
-                trouble_short_label = st.selectbox(
-                    "Trouble Short?",
-                    ["None", "Mild", "Severe"],
-                    help="How penal is a miss that finishes short of the target?",
-                )
-            with tcol2:
-                trouble_long_label = st.selectbox(
-                    "Trouble Long?",
-                    ["None", "Mild", "Severe"],
-                    help="How penal is a miss that finishes long of the target?",
-                )
-            with tcol3:
-                green_firmness_label = st.selectbox(
-                    "Green Firmness",
-                    ["Soft", "Medium", "Firm"],
-                    help="Soft = stops close to carry distance, Firm = more roll-out.",
-                )
+                pin_lateral_offset = 0.0
+                if green_width > 0:
+                    half_w = green_width / 2.0
+                    if pin_side == "Left":
+                        pin_lateral_offset = -0.66 * half_w
+                    elif pin_side == "Right":
+                        pin_lateral_offset = 0.66 * half_w
+                    else:
+                        pin_lateral_offset = 0.0
 
-            st.markdown("---")
-            st.markdown("**Pin Lateral Position (Optional)**")
-            pw1, pw2 = st.columns(2)
-            with pw1:
-                green_width = st.number_input(
-                    "Green width (yards, left-to-right)",
-                    min_value=0.0,
-                    max_value=60.0,
-                    value=0.0,
-                    step=1.0,
-                    help="Approximate green width. Leave 0 if you do not want lateral modeling.",
+                st.markdown("---")
+                st.markdown("**Player Tendencies (Optional)**")
+                tendency = st.radio(
+                    "Usual Miss (Distance)",
+                    ["Neutral", "Usually Short", "Usually Long"],
+                    horizontal=True,
+                    help="If you typically come up short or long, Golf Caddy can bias the target slightly to compensate.",
                 )
-            with pw2:
-                pin_side = st.selectbox(
-                    "Pin side",
-                    ["Center", "Left", "Right"],
-                    help="Approximate lateral pin location on the green.",
+                skill = st.radio(
+                    "Ball Striking Consistency",
+                    ["Recreational", "Intermediate", "Highly Consistent"],
+                    help="Used to scale dispersion windows and strokes-gained simulations.",
                 )
-
-            pin_lateral_offset = 0.0
-            if green_width > 0:
-                half_w = green_width / 2.0
-                if pin_side == "Left":
-                    pin_lateral_offset = -0.66 * half_w
-                elif pin_side == "Right":
-                    pin_lateral_offset = 0.66 * half_w
-                else:
-                    pin_lateral_offset = 0.0
-
-            st.markdown("---")
-            st.markdown("**Player Tendencies (Optional)**")
-            tendency = st.radio(
-                "Usual Miss (Distance)",
-                ["Neutral", "Usually Short", "Usually Long"],
-                horizontal=True,
-                help="If you typically come up short or long, Golf Caddy can bias the target slightly to compensate.",
-            )
-            skill = st.radio(
-                "Ball Striking Consistency",
-                ["Recreational", "Intermediate", "Highly Consistent"],
-                help="Used to scale dispersion windows and strokes-gained simulations.",
-            )
-
-        # Defaults if advanced not touched (defensive programming)
-        if "trouble_short_label" not in locals():
-            trouble_short_label = "None"
-        if "trouble_long_label" not in locals():
-            trouble_long_label = "None"
-        if "green_firmness_label" not in locals():
-            green_firmness_label = "Medium"
-        if "tendency" not in locals():
-            tendency = "Neutral"
-        if "skill" not in locals():
-            skill = "Intermediate"
-        if "green_width" not in locals():
-            green_width = 0.0
-        if "pin_lateral_offset" not in locals():
-            pin_lateral_offset = 0.0
-        if "front_yards" not in locals():
-            front_yards = 0.0
-        if "back_yards" not in locals():
-            back_yards = 0.0
-        if "use_center" not in locals():
+        else:
+            # Quick mode defaults: no explicit trouble/green/tendency modeling
             use_center = False
+            front_yards = 0.0
+            back_yards = 0.0
+            trouble_short_label = "None"
+            trouble_long_label = "None"
+            green_firmness_label = "Medium"
+            green_width = 0.0
+            pin_lateral_offset = 0.0
+            tendency = "Neutral"
+            skill = "Intermediate"
 
         # Skill factor for dispersion scaling (used in SG + charts)
         skill_norm = skill.lower()
@@ -902,7 +911,8 @@ def main():
             raw_target = target_pin
             using_center = False
             if (
-                use_center
+                mode == "Advanced"
+                and use_center
                 and front_yards > 0
                 and back_yards > front_yards
             ):
@@ -972,8 +982,12 @@ def main():
             start_distance_yards = raw_target
 
             # For SG green model (0/0 triggers virtual green)
-            front_for_sg = front_yards if (use_center and front_yards > 0) else 0.0
-            back_for_sg = back_yards if (use_center and back_yards > front_for_sg) else 0.0
+            front_for_sg = (
+                front_yards if (mode == "Advanced" and use_center and front_yards > 0) else 0.0
+            )
+            back_for_sg = (
+                back_yards if (mode == "Advanced" and use_center and back_yards > front_for_sg) else 0.0
+            )
 
             best3 = recommend_shots_with_sg(
                 target_total=final_target_biased,
@@ -1074,16 +1088,17 @@ def main():
 
             greens_data = []
 
-            if front_yards > 0:
-                greens_data.append({"Distance": front_yards, "Label": "Front"})
-            if back_yards > 0 and back_yards > front_yards:
-                greens_data.append({"Distance": back_yards, "Label": "Back"})
+            if mode == "Advanced":
+                if front_yards > 0:
+                    greens_data.append({"Distance": front_yards, "Label": "Front"})
+                if back_yards > 0 and back_yards > front_yards:
+                    greens_data.append({"Distance": back_yards, "Label": "Back"})
+
+                if using_center:
+                    greens_data.append({"Distance": raw_target, "Label": "Center"})
 
             greens_data.append({"Distance": target_pin, "Label": "Pin"})
             greens_data.append({"Distance": final_target_biased, "Label": "Plays As"})
-
-            if using_center:
-                greens_data.append({"Distance": raw_target, "Label": "Center"})
 
             if greens_data:
                 greens_df = pd.DataFrame(greens_data)
@@ -1137,6 +1152,13 @@ def main():
 
         st.markdown("### Key Concepts")
 
+        st.markdown("**Modes**")
+        st.markdown(
+            "- **Quick**: Minimal inputs for fast on-course decisions (pin yardage, wind, lie, elevation). "
+            "Defaults are used behind the scenes for trouble and green details.\n"
+            "- **Advanced**: Full control over green layout, trouble, pin side, tendencies, and strategy."
+        )
+
         st.markdown("**Adjusted Target (Plays As)**")
         st.markdown(
             "The app converts your raw pin or center-of-green yardage into a 'plays as' distance by "
@@ -1170,8 +1192,8 @@ def main():
 
         st.markdown("**Strategy (Manual or Auto)**")
         st.markdown(
-            "You can either choose a strategy (Conservative/Balanced/Aggressive) manually, or let Golf Caddy "
-            "auto-select one based on distance, trouble severity, and your consistency level."
+            "You can either choose a strategy (Conservative/Balanced/Aggressive) manually in Advanced mode, "
+            "or let Golf Caddy auto-select one based on distance, trouble severity, and your consistency level."
         )
 
         st.markdown("**Strokes Gained**")
