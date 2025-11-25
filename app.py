@@ -4,11 +4,32 @@ import altair as alt
 
 from strokes_gained_engine import simulate_expected_strokes_for_shot
 
-# ---- CONSTANTS ---- #
+# ============================
+# CONFIG / CONSTANTS
+# ============================
 
 BASELINE_DRIVER_SPEED = 100.0  # mph
 
-# Full-swing wedge carries at 100 mph (center values)
+# Bias for usual miss pattern
+TENDENCY_BIAS_YARDS = 3.0
+
+# Strategy thresholds for auto-pick (yards)
+WEDGE_AGGRESSIVE_MAX = 110.0
+MID_IRON_MAX = 190.0
+
+# Limit how many candidates get full SG simulation
+SG_CANDIDATE_LIMIT = 10
+
+# Default number of SG simulations per candidate
+DEFAULT_N_SIM = 200
+
+# Strategy labels (single source of truth)
+STRATEGY_BALANCED = "Balanced"
+STRATEGY_CONSERVATIVE = "Conservative (Par-focused)"
+STRATEGY_AGGRESSIVE = "Aggressive (Pin-seeking)"
+
+# ---- Full-swing wedge carries at 100 mph (center values) ---- #
+
 FULL_WEDGE_CARRIES = {
     "PW": 121,
     "GW": 107,
@@ -16,7 +37,7 @@ FULL_WEDGE_CARRIES = {
     "LW": 78,
 }
 
-# Full bag baseline at 100 mph driver speed
+# ---- Full bag baseline at 100 mph driver speed ---- #
 # club, ball_speed, launch, spin, carry_center, total_center
 FULL_BAG_BASE = [
     ("Driver", 148, 13.0, 2500, 233, 253),
@@ -34,7 +55,8 @@ FULL_BAG_BASE = [
     ("LW",      75, 34.0,10500,  75,  81),
 ]
 
-# Shot-type multipliers
+# ---- Shot-type multipliers ---- #
+
 SHOT_MULTIPLIERS = {
     "Full":       1.00,
     "Choke-Down": 0.94,
@@ -43,7 +65,8 @@ SHOT_MULTIPLIERS = {
     "1/4":        0.40,
 }
 
-# Scoring shots: (club, shot type, trajectory)
+# ---- Scoring shots: (club, shot type, trajectory) ---- #
+
 SCORING_DEFS = [
     ("PW", "Full",       "Medium-High"),
     ("PW", "Choke-Down", "Medium"),
@@ -65,7 +88,8 @@ SCORING_DEFS = [
     ("GW", "1/2",        "Medium-Low"),
 ]
 
-# Simplified wind strengths (mph)
+# ---- Simplified wind strengths (mph) ---- #
+
 WIND_STRENGTH_MAP = {
     "none":   0,
     "light":  5,
@@ -74,7 +98,9 @@ WIND_STRENGTH_MAP = {
 }
 
 
-# ---- BASIC HELPERS ---- #
+# ============================
+# BASIC HELPERS
+# ============================
 
 def scale_value(base_value: float, driver_speed_mph: float) -> float:
     """Scale a baseline value linearly with driver speed."""
@@ -141,7 +167,9 @@ def compute_roll_yards(shot: dict, green_firmness_label: str) -> float:
     return base_roll * factor
 
 
-# ---- DATA BUILDERS ---- #
+# ============================
+# DATA BUILDERS
+# ============================
 
 @st.cache_data
 def build_scoring_shots(driver_speed_mph: float):
@@ -242,7 +270,9 @@ def build_all_candidate_shots(driver_speed_mph: float):
     return all_shots, scoring_shots, full_bag
 
 
-# ---- ADJUSTMENT MODELS ---- #
+# ============================
+# ADJUSTMENT MODELS
+# ============================
 
 def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> float:
     """
@@ -309,7 +339,9 @@ def apply_lie(target: float, lie_label: str) -> float:
     return target * mult
 
 
-# ---- STRATEGY & SCORING ---- #
+# ============================
+# STRATEGY & SCORING
+# ============================
 
 def shot_score(
     target_total: float,
@@ -493,41 +525,41 @@ def auto_pick_strategy(
     Simple rule-based strategy picker.
 
     Returns one of:
-      - "Conservative (Par-focused)"
-      - "Balanced"
-      - "Aggressive (Pin-seeking)"
+      - STRATEGY_CONSERVATIVE
+      - STRATEGY_BALANCED
+      - STRATEGY_AGGRESSIVE
     """
     t_short = trouble_short_label.lower()
     t_long = trouble_long_label.lower()
-    skill = skill.lower()
+    skill_norm = skill.lower()
 
     severe_trouble = (t_short.startswith("severe") or t_long.startswith("severe"))
     mild_trouble = (t_short.startswith("mild") or t_long.startswith("mild"))
 
     # Very short wedges: more room to be aggressive if no big trouble
-    if target_distance_yards < 110:
+    if target_distance_yards < WEDGE_AGGRESSIVE_MAX:
         if severe_trouble or mild_trouble:
-            return "Balanced"
-        return "Aggressive (Pin-seeking)"
+            return STRATEGY_BALANCED
+        return STRATEGY_AGGRESSIVE
 
     # Mid-iron zone
-    if 110 <= target_distance_yards <= 190:
+    if WEDGE_AGGRESSIVE_MAX <= target_distance_yards <= MID_IRON_MAX:
         if severe_trouble:
-            return "Conservative (Par-focused)"
+            return STRATEGY_CONSERVATIVE
         if mild_trouble:
-            if skill == "recreational":
-                return "Conservative (Par-focused)"
+            if skill_norm == "recreational":
+                return STRATEGY_CONSERVATIVE
             else:
-                return "Balanced"
-        return "Balanced"
+                return STRATEGY_BALANCED
+        return STRATEGY_BALANCED
 
     # Long shots (190+)
     if severe_trouble or mild_trouble:
-        return "Conservative (Par-focused)"
+        return STRATEGY_CONSERVATIVE
 
-    if skill == "highly consistent":
-        return "Balanced"
-    return "Conservative (Par-focused)"
+    if skill_norm == "highly consistent":
+        return STRATEGY_BALANCED
+    return STRATEGY_CONSERVATIVE
 
 
 def recommend_shots_with_sg(
@@ -544,7 +576,7 @@ def recommend_shots_with_sg(
     skill_factor: float,
     pin_lateral_offset: float,
     green_width: float,
-    n_sim: int = 200,
+    n_sim: int = DEFAULT_N_SIM,
     top_n: int = 3,
 ):
     """
@@ -556,16 +588,14 @@ def recommend_shots_with_sg(
         - score (legacy distance-based score)
         - sg (strokes gained vs baseline)
     """
-    scored = []
 
+    # ---- First pass: distance/risk pre-filter ---- #
+    prelim = []
     for s in candidates:
-        # Base carry/total with roll
         carry = s["carry"]
         roll = compute_roll_yards(s, green_firmness_label)
         total = carry + roll
-
-        # Legacy distance/risk score (tie-breaker)
-        legacy_score = shot_score(
+        score_dist = shot_score(
             target_total,
             total,
             s,
@@ -573,6 +603,28 @@ def recommend_shots_with_sg(
             long_trouble_label,
             strategy_label,
         )
+        prelim.append(
+            {
+                "base": s,
+                "carry": carry,
+                "total": total,
+                "distance_score": score_dist,
+            }
+        )
+
+    # Keep the best N candidates by distance/risk
+    prelim.sort(key=lambda x: x["distance_score"])
+    filtered = prelim[:SG_CANDIDATE_LIMIT]
+
+    scored = []
+
+    # ---- Second pass: full SG simulation on filtered set ---- #
+    for item in filtered:
+        s = item["base"]
+        carry = item["carry"]
+        total = item["total"]
+
+        legacy_score = item["distance_score"]
 
         # Prepare shot dict for SG engine
         shot_for_sg = {
@@ -594,6 +646,8 @@ def recommend_shots_with_sg(
             n_sim=n_sim,
             pin_lateral_offset=pin_lateral_offset,
             green_width=green_width,
+            # seed left as default for deterministic behavior;
+            # pass seed=None if you ever want fresh randomness per call.
         )
 
         sg = baseline - expected_if_played  # positive = good
@@ -614,9 +668,16 @@ def recommend_shots_with_sg(
     return scored[:top_n]
 
 
-# ---- STREAMLIT APP ---- #
+# ============================
+# STREAMLIT APP
+# ============================
 
 def main():
+    st.set_page_config(
+        page_title="Golf Caddy",
+        layout="centered",
+    )
+
     st.title("Golf Caddy")
     st.caption(
         "Enter your conditions and let Golf Caddy suggest shot options based on "
@@ -692,7 +753,7 @@ def main():
             )
             manual_strategy = st.radio(
                 "Strategy (if not auto)",
-                ["Balanced", "Conservative (Par-focused)", "Aggressive (Pin-seeking)"],
+                [STRATEGY_BALANCED, STRATEGY_CONSERVATIVE, STRATEGY_AGGRESSIVE],
                 index=0,
                 help="Conservative favors safety, Aggressive chases pins, Balanced is in between.",
             )
@@ -821,9 +882,10 @@ def main():
             use_center = False
 
         # Skill factor for dispersion scaling (used in SG + charts)
-        if skill == "Recreational":
+        skill_norm = skill.lower()
+        if skill_norm == "recreational":
             skill_factor = 1.3
-        elif skill == "Highly Consistent":
+        elif skill_norm == "highly consistent":
             skill_factor = 0.8
         else:
             skill_factor = 1.0
@@ -855,9 +917,9 @@ def main():
             # Apply player tendency bias
             bias_adjust = 0.0
             if tendency == "Usually Short":
-                bias_adjust = 3.0    # aim a bit longer
+                bias_adjust = TENDENCY_BIAS_YARDS
             elif tendency == "Usually Long":
-                bias_adjust = -3.0   # aim a bit shorter
+                bias_adjust = -TENDENCY_BIAS_YARDS
 
             final_target_biased = final_target + bias_adjust
 
@@ -927,7 +989,7 @@ def main():
                 skill_factor=skill_factor,
                 pin_lateral_offset=pin_lateral_offset,
                 green_width=green_width,
-                n_sim=200,
+                n_sim=DEFAULT_N_SIM,
                 top_n=3,
             )
 
