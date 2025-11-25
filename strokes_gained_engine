@@ -54,27 +54,23 @@ PUTTING_CURVE = [
 ]
 
 
-def _interp_curve(curve, x):
+def _interp_curve(curve, x: float) -> float:
     """
     Piecewise-linear interpolation/extrapolation on (distance, value) pairs.
     Distances are assumed descending.
     """
-    # Clamp if outside range
     if x >= curve[0][0]:
         return curve[0][1]
     if x <= curve[-1][0]:
         return curve[-1][1]
 
-    # Find segment where x falls between d1 >= x >= d2
     for i in range(len(curve) - 1):
         d1, v1 = curve[i]
         d2, v2 = curve[i + 1]
         if d1 >= x >= d2:
-            # linear interpolation
             t = (d1 - x) / (d1 - d2)
             return v1 + t * (v2 - v1)
 
-    # Fallback (should not reach)
     return curve[-1][1]
 
 
@@ -86,19 +82,25 @@ def expected_putts_from_distance(feet: float) -> float:
 def expected_strokes_from_distance(distance_yards: float, surface: str) -> float:
     """
     Expected strokes to hole out from a given distance and surface.
-    surface: 'fairway', 'light_rough', 'heavy_rough', 'around_green', 'green'
+
+    surface in:
+      - 'fairway'
+      - 'light_rough'
+      - 'heavy_rough'
+      - 'around_green'
+      - 'green'
     """
     d = max(distance_yards, 0.0)
+    s = surface.lower()
 
-    surface = surface.lower()
-    if surface == "green":
+    if s == "green":
         feet = d * 3.0
         return expected_putts_from_distance(feet)
-    elif surface == "around_green":
+    elif s == "around_green":
         return _interp_curve(AROUND_GREEN_CURVE, d)
-    elif surface == "light_rough":
+    elif s == "light_rough":
         return _interp_curve(LIGHT_ROUGH_CURVE, d)
-    elif surface == "heavy_rough":
+    elif s == "heavy_rough":
         return _interp_curve(HEAVY_ROUGH_CURVE, d)
     else:
         # default to fairway
@@ -111,20 +113,20 @@ def get_lateral_sigma(category: str) -> float:
     """
     Rough lateral dispersion (yards) for each club category before skill scaling.
     """
-    if category == "long":
+    c = category.lower()
+    if c == "long":
         return 15.0
-    if category == "mid_iron":
+    if c == "mid_iron":
         return 12.0
-    if category == "short_iron":
+    if c == "short_iron":
         return 10.0
-    if category == "scoring_wedge":
+    if c == "scoring_wedge":
         return 8.0
     return 10.0
 
 
 def sample_normal(mean: float, sigma: float) -> float:
     """Sample from a normal distribution using Box-Muller."""
-    # If sigma is zero or negative, just return the mean
     if sigma <= 0:
         return mean
     u1 = random.random()
@@ -137,14 +139,14 @@ def sample_normal(mean: float, sigma: float) -> float:
 
 def trouble_penalty(trouble_label: str) -> float:
     """
-    Extra penalty strokes when a shot finishes in a severe trouble zone.
-    This is a simplified model:
-      - Mild: small cost (e.g., tough bunker/rough)
-      - Severe: bigger cost (water/OB-type outcome)
+    Extra penalty strokes when a shot finishes in a trouble zone.
+
+    - Mild: small cost (e.g., tough bunker/rough)
+    - Severe: larger cost (e.g., water/OB/very bad miss)
     """
     t = trouble_label.lower()
     if t.startswith("mild"):
-        return 0.30  # ~third of a stroke
+        return 0.30  # ~ a third of a stroke
     if t.startswith("severe"):
         return 0.80  # close to a full stroke lost
     return 0.0
@@ -167,20 +169,35 @@ def simulate_expected_strokes_for_shot(
     """
     Monte Carlo simulation for expected strokes from this shot choice.
 
+    Inputs:
+      - shot: dict with at least:
+          'total': expected total distance (carry + roll, yards)
+          'sigma': longitudinal distance sigma (yards)
+          'category': club category ('long', 'mid_iron', 'short_iron', 'scoring_wedge')
+      - start_distance_yards: distance from hole before the shot
+      - start_surface: 'fairway', 'light_rough', 'heavy_rough'
+      - target_distance_yards: geometric distance to the hole (pin or green center)
+      - front_yards, back_yards: front/back of green (yards). If invalid, a virtual
+        green is constructed around the target distance.
+      - trouble_short_label / trouble_long_label: 'None', 'Mild', 'Severe'
+      - skill_factor: scales dispersion (1.0 = neutral, >1 = more scatter, <1 = tighter)
+      - n_sim: number of random outcomes to simulate
+
     Returns:
       (baseline_expected_strokes, expected_strokes_if_played)
 
-    baseline_expected_strokes: from start distance & surface (no shot chosen).
-    expected_strokes_if_played: average over many simulated outcomes of this shot.
-
-    The difference baseline - expected = strokes gained with this decision.
+    Strokes gained for this shot choice:
+      SG = baseline_expected_strokes - expected_strokes_if_played
     """
-    # Baseline: what is the expected outcome if an "average" shot is played?
+    # Seed for reproducibility per call (optional: comment out if you want randomness each run)
+    random.seed(42)
+
+    # Baseline from starting position
     baseline = expected_strokes_from_distance(start_distance_yards, start_surface)
 
-    # Effective green model if front/back not provided
+    # Green model
     if front_yards <= 0 or back_yards <= front_yards:
-        # Create virtual green around target
+        # Virtual green around target
         green_front = target_distance_yards - 7.0
         green_back = target_distance_yards + 7.0
     else:
@@ -190,7 +207,7 @@ def simulate_expected_strokes_for_shot(
     green_center = 0.5 * (green_front + green_back)
     green_half_width = 10.0  # lateral radius in yards assumed
 
-    # Longitudinal dispersion already in shot["sigma"]
+    # Longitudinal dispersion (already scaled by your logic if desired)
     sigma_long = shot.get("sigma", 7.0) * skill_factor
 
     # Lateral dispersion by category
@@ -201,46 +218,39 @@ def simulate_expected_strokes_for_shot(
     expected_list = []
 
     for _ in range(n_sim):
-        # Base expected total distance for this shot
         base_total = shot["total"]
 
-        # Sample actual outcome in distance and lateral offset
+        # Sample actual distance and lateral offset
         actual_total = sample_normal(base_total, sigma_long)
         lateral = sample_normal(0.0, sigma_lat)
 
-        # Compute resulting distance to hole in yards
-        # Positive diff means long, negative means short
+        # Distance to hole (radial)
         diff = actual_total - target_distance_yards
-        dist_to_hole_yards = abs(diff)  # radial distance for SG purposes
+        dist_to_hole_yards = abs(diff)
 
-        # Determine rough surface type after shot
-        # Start with assumption: near green if inside 40 yards
+        # Now approximate remaining strokes
         if dist_to_hole_yards <= 0.5:
-            # Effectively holed; 0 strokes remaining
+            # Holed
             rem_strokes = 0.0
         elif dist_to_hole_yards <= 2.0:
-            # On green very close
+            # Very close putt
             rem_strokes = expected_strokes_from_distance(dist_to_hole_yards, "green")
         elif dist_to_hole_yards <= 40.0:
-            # Around the green area
-            # If within the green depth and lateral width, consider as green/fringe
+            # Short game zone
             on_green_like = (
                 green_front <= actual_total <= green_back
                 and abs(lateral) <= green_half_width
             )
             if on_green_like:
-                # Convert yards to feet for putting
                 feet = dist_to_hole_yards * 3.0
                 rem_strokes = expected_putts_from_distance(feet)
             else:
-                # Short game from rough/fringe
                 rem_strokes = expected_strokes_from_distance(
                     dist_to_hole_yards,
-                    "around_green"
+                    "around_green",
                 )
         else:
-            # Longer miss; treat depending on direction
-            # If clearly short or long, use rough curves + trouble penalties
+            # Longer miss: rough + possible trouble
             if diff < 0:
                 # Short miss
                 surface_after = "light_rough"
@@ -256,7 +266,6 @@ def simulate_expected_strokes_for_shot(
                 )
                 rem_strokes += trouble_penalty(trouble_long_label)
 
-        # One stroke used for this shot
         total_strokes = 1.0 + rem_strokes
         expected_list.append(total_strokes)
 
