@@ -735,7 +735,7 @@ with tab_caddy:
                 st.markdown("\n".join(summary_lines))
                     
                     # Dispersion visualization for best option
-                    st.markdown("### Dispersion Preview (Best Option)")
+                st.markdown("### Dispersion Preview (Best Option)")
 
                     samples = simulate_dispersion_samples(
                         center_total=best["total"],
