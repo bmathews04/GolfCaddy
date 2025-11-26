@@ -788,12 +788,12 @@ def main():
 
     # Driver speed and precomputed data (shared across tabs)
     driver_speed = st.slider(
-    "Current Driver Speed (mph)",
-    90,
-    115,
-    defaults["driver_speed"],
-    help="Used to scale your entire bag's distances from a 100 mph baseline.",
-)
+        "Current Driver Speed (mph)",
+        90,
+        115,
+        defaults["driver_speed"],
+        help="Used to scale your entire bag's distances from a 100 mph baseline.",
+    )
     st.session_state.driver_speed = driver_speed
 
     all_shots_base, scoring_shots, full_bag = build_all_candidate_shots(driver_speed)
@@ -805,13 +805,13 @@ def main():
     with tab_caddy:
         # Mode selector
         mode = st.radio(
-    "Mode",
-    ["Quick", "Advanced"],
-    horizontal=True,
-    index=0 if st.session_state.mode == "Quick" else 1,
-    help=(
-        "Quick mode keeps inputs minimal for fast on-course use. "
-        "Advanced mode lets you tweak every detail (trouble, green layout, pin side, tendencies)."
+            "Mode",
+            ["Quick", "Advanced"],
+            horizontal=True,
+            index=0 if st.session_state.mode == "Quick" else 1,
+            help=(
+                "Quick mode keeps inputs minimal for fast on-course use. "
+                "Advanced mode lets you tweak every detail (trouble, green layout, pin side, tendencies)."
             ),
         )
         st.session_state.mode = mode
@@ -973,23 +973,29 @@ def main():
                 st.markdown("---")
                 st.markdown("**Player Tendencies (Optional)**")
                 tendency = st.radio(
-    "Usual Miss (Distance)",
-    ["Neutral", "Usually Short", "Usually Long"],
-    horizontal=True,
-    index=["Neutral", "Usually Short", "Usually Long"].index(st.session_state.tendency),
-    help="If you typically come up short or long, Golf Caddy can bias the target slightly to compensate.",
-    )
-    st.session_state.tendency = tendency
+                    "Usual Miss (Distance)",
+                    ["Neutral", "Usually Short", "Usually Long"],
+                    horizontal=True,
+                    index=["Neutral", "Usually Short", "Usually Long"].index(
+                        st.session_state.tendency
+                    ),
+                    help="If you typically come up short or long, Golf Caddy can bias the target slightly to compensate.",
+                )
+                st.session_state.tendency = tendency
 
-    skill = st.radio(
-    "Ball Striking Consistency",
-    ["Recreational", "Intermediate", "Highly Consistent"],
-    index=["Recreational", "Intermediate", "Highly Consistent"].index(st.session_state.skill),
-    help="Used to scale dispersion windows and strokes-gained simulations.",
-    )
-    st.session_state.skill = skill
-    
-else:
+                skill = st.radio(
+                    "Ball Striking Consistency",
+                    ["Recreational", "Intermediate", "Highly Consistent"],
+                    index=[
+                        "Recreational",
+                        "Intermediate",
+                        "Highly Consistent",
+                    ].index(st.session_state.skill),
+                    help="Used to scale dispersion windows and strokes-gained simulations.",
+                )
+                st.session_state.skill = skill
+
+        else:
             # Quick mode defaults: no explicit trouble/green/tendency modeling
             use_center = False
             front_yards = 0.0
@@ -1020,17 +1026,17 @@ else:
 
         if st.button("Suggest Shots ✅"):
             with st.spinner("Crunching the numbers..."):
-            # Decide raw target (pin vs center of green)
-            raw_target = target_pin
-            using_center = False
-            if (
-                mode == "Advanced"
-                and use_center
-                and front_yards > 0
-                and back_yards > front_yards
-            ):
-                raw_target = (front_yards + back_yards) / 2.0
-                using_center = True
+                # Decide raw target (pin vs center of green)
+                raw_target = target_pin
+                using_center = False
+                if (
+                    mode == "Advanced"
+                    and use_center
+                    and front_yards > 0
+                    and back_yards > front_yards
+                ):
+                    raw_target = (front_yards + back_yards) / 2.0
+                    using_center = True
 
             # Adjust the target for environment to get "plays as" distance
             after_wind = adjust_for_wind(raw_target, wind_dir, wind_strength)
