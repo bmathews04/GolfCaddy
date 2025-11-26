@@ -707,7 +707,7 @@ def main():
         layout="centered",
     )
 
-    # --- Global CSS Theme Polish ---
+# --- Global CSS Theme Polish ---
 st.markdown(
     """
     <style>
@@ -736,7 +736,7 @@ st.markdown(
         font-size: 0.92rem !important;
     }
 
-    /* Optional: slightly round all containers/panels */
+    /* Slightly round all containers/panels */
     .stApp [data-testid="stVerticalBlock"] {
         border-radius: 0.75rem;
     }
@@ -748,9 +748,11 @@ st.markdown(
 
     </style>
     """,
-    unsafe_allow_html=True,
-    )
-    st.title("Golf Caddy")
+    unsafe_allow_html=True
+)
+
+st.title("Golf Caddy")
+
     st.caption(
         "Enter your conditions and let Golf Caddy suggest shot options based on "
         "professional-style decision logic and strokes gained."
