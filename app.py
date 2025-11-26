@@ -1,202 +1,144 @@
-import math
-from typing import List, Dict
-
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
 import altair as alt
 
 from strokes_gained_engine import (
     build_all_candidate_shots,
-    recommend_shots_with_sg,
-    get_dispersion_sigma,
-    get_lateral_sigma,
     adjust_for_wind,
     apply_elevation,
     apply_lie,
+    recommend_shots_with_sg,
+    compute_optimal_carry_for_target,
+    get_dispersion_sigma,
+    get_lateral_sigma,
     STRATEGY_BALANCED,
     STRATEGY_CONSERVATIVE,
     STRATEGY_AGGRESSIVE,
     DEFAULT_N_SIM,
-    compute_optimal_carry_for_target,
+    par3_strategy,
+    par4_strategy,
+    par5_strategy,
 )
 
+
 # ============================================================
-# PAGE CONFIG & THEME
+# PAGE CONFIG & DEFAULTS
 # ============================================================
 
 st.set_page_config(
     page_title="Golf Caddy",
-    page_icon="⛳",
     layout="wide",
 )
 
-# ============================================================
-# SESSION STATE DEFAULTS
-# ============================================================
+DEFAULTS = {
+    "driver_speed": 100,
+    "mode": "Quick",
+    "tendency": "Neutral",
+    "skill": "Intermediate",
+}
 
-if "driver_speed" not in st.session_state:
-    st.session_state.driver_speed = 100
 
-if "mode" not in st.session_state:
-    st.session_state.mode = "Quick"
+def init_session_state():
+    for key, val in DEFAULTS.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
 
-if "tournament_mode" not in st.session_state:
-    st.session_state.tournament_mode = False
 
-if "tendency" not in st.session_state:
-    st.session_state.tendency = "Neutral"
+init_session_state()
 
-if "skill" not in st.session_state:
-    st.session_state.skill = "Intermediate"
 
-if "range_actual_carries" not in st.session_state:
-    # store user-input range averages by club
-    st.session_state.range_actual_carries = {}
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def get_club_category_for_table(club: str) -> str:
-    """Public mapping of club → category (sync with engine)."""
+# Local helper to categorize clubs for dispersion table
+def _category_for_club(club: str) -> str:
     if club in ["PW", "GW", "SW", "LW"]:
-        return "Scoring wedge"
+        return "scoring_wedge"
     if club in ["9i", "8i"]:
-        return "Short iron"
+        return "short_iron"
     if club in ["7i", "6i", "5i"]:
-        return "Mid iron"
-    return "Long / wood / driver"
-
-
-def skill_to_factor(skill: str) -> float:
-    s = (skill or "Intermediate").lower()
-    if s == "recreational":
-        return 1.3
-    if s == "highly consistent":
-        return 0.8
-    return 1.0
-
-def ui_surface_to_engine_lie(surface_label: str) -> str:
-    """
-    Map the human-facing 'Surface' selector to the lie types
-    used by the strokes-gained engine.
-    """
-    s = (surface_label or "Fairway").lower()
-    if "fairway" in s:
-        return "fairway"
-    if "light" in s and "rough" in s:
-        return "rough"
-    if "heavy" in s and "rough" in s:
-        # You can change this to 'recovery' if you want to treat heavy rough as jail
-        return "rough"
-    if "sand" in s or "bunker" in s:
-        return "sand"
-    if "recovery" in s:
-        return "recovery"
-    return "fairway"
-
-def simulate_dispersion_samples(
-    center_total: float,
-    category: str,
-    skill_factor: float,
-    n: int = 400,
-) -> np.ndarray:
-    """Generate 1D dispersion samples around center_total for charting."""
-    sigma = get_dispersion_sigma(category)
-    sigma_eff = max(0.1, sigma * skill_factor)
-    return np.random.normal(loc=center_total, scale=sigma_eff, size=n)
+        return "mid_iron"
+    return "long"
 
 
 # ============================================================
-# SIDEBAR: GLOBAL CONTROLS
+# SIDEBAR SETTINGS
 # ============================================================
 
-st.sidebar.title("Golf Caddy Settings")
+with st.sidebar:
+    st.header("Player Profile & Modes")
 
-driver_speed = st.sidebar.slider(
-    "Current Driver Speed (mph)",
-    min_value=90,
-    max_value=120,
-    value=st.session_state.driver_speed,
-    help="Used to scale your entire bag's distances from a 100 mph baseline.",
-)
-st.session_state.driver_speed = driver_speed
+    # Handicap / scoring baseline -> SG profile factor
+    handicap = st.slider(
+        "Approx Handicap Index",
+        min_value=0.0,
+        max_value=30.0,
+        value=14.0,
+        step=0.1,
+        help="Used to tune the strokes-gained baseline to your scoring level.",
+    )
+    if handicap <= 5:
+        sg_profile_factor = 0.92
+    elif handicap <= 10:
+        sg_profile_factor = 1.00
+    elif handicap <= 20:
+        sg_profile_factor = 1.05
+    else:
+        sg_profile_factor = 1.10
 
-tournament_mode = st.sidebar.checkbox(
-    "Tournament Mode (USGA / R&A Legal)",
-    value=st.session_state.tournament_mode,
-    help=(
-        "When enabled, Golf Caddy acts like a digital yardage book: "
-        "raw distances only, no plays-like math or club recommendations."
-    ),
-)
-st.session_state.tournament_mode = tournament_mode
+    st.caption(
+        "Lower handicap = slightly tougher strokes-gained baseline. "
+        "Higher handicap = more forgiving baseline."
+    )
 
-st.sidebar.markdown("---")
-st.sidebar.caption(
-    "Quick tip: Use **Quick** mode on-course for fast decisions, "
-    "then **Range** and **Combine** tabs on the practice tee to dial in your game."
-)
+    tournament_mode = st.checkbox(
+        "Tournament Mode (USGA Legal View)",
+        value=False,
+        help=(
+            "When enabled, the Play tab only shows raw yardages (no plays-like or "
+            "decision recommendations)."
+        ),
+    )
 
-# ---- Strokes-Gained Baseline (Handicap Profile) ---- #
-if "sg_profile" not in st.session_state:
-    st.session_state.sg_profile = "Tour / Scratch"
-
-def scoring_profile_to_factor(label: str) -> float:
-    lab = (label or "").lower()
-    if "tour" in lab and "scratch" in lab:
-        return 1.0           # Tour / scratch
-    if "5–9" in lab or "5-9" in lab:
-        return 1.08          # Slightly higher expected strokes
-    if "10–14" in lab or "10-14" in lab:
-        return 1.15
-    if "15+" in lab:
-        return 1.22
-    return 1.0
-
-sg_profile_label = st.sidebar.selectbox(
-    "Strokes-Gained Baseline",
-    ["Tour / Scratch", "5–9 Handicap", "10–14 Handicap", "15+ Handicap"],
-    index=["Tour / Scratch", "5–9 Handicap", "10–14 Handicap", "15+ Handicap"].index(
-        st.session_state.sg_profile
-    ),
-    help="Choose who you want SG to be relative to: tour-level or your handicap band.",
-)
-st.session_state.sg_profile = sg_profile_label
-sg_profile_factor = scoring_profile_to_factor(sg_profile_label)
-
-st.sidebar.markdown("---")
-st.sidebar.caption(
-    "Quick tip: Use Quick mode on-course, then Range & Combine off-course "
-    "to train your distance control and SG over time."
-)
-
-
-# Precompute bag for current driver speed
-all_shots_base, scoring_shots, full_bag = build_all_candidate_shots(driver_speed)
+    st.markdown("---")
+    st.markdown("**About Golf Caddy**")
+    st.caption(
+        "This is a decision engine, not a rules engine. In non-tournament play, "
+        "use all features. In competition, use Tournament Mode to respect rules "
+        "around distance-measuring devices and advice."
+    )
 
 
 # ============================================================
-# MAIN TITLE & TABS
+# MAIN HEADER & SHARED DATA
 # ============================================================
 
 st.title("Golf Caddy")
 
-tab_caddy, tab_range, tab_yardages, tab_combine, tab_info = st.tabs(
-    ["Play (Caddy)", "Range Mode", "Yardages", "Combine / Practice", "How it Works"]
+# Driver speed and precomputed data (shared across tabs)
+driver_speed = st.slider(
+    "Current Driver Speed (mph)",
+    90,
+    120,
+    st.session_state.driver_speed,
+    help="Used to scale your entire bag's distances from a 100 mph baseline.",
+)
+st.session_state.driver_speed = driver_speed
+
+all_shots_base, scoring_shots, full_bag = build_all_candidate_shots(driver_speed)
+
+# Tabs: Play (caddy), Yardages, Strategy, Info
+tab_caddy, tab_yardages, tab_strategy, tab_info = st.tabs(
+    ["Play", "Yardages", "Par Strategy", "How it Works"]
 )
 
 # ============================================================
-# ---------- CADDY TAB ----------
+# PLAY TAB (CADDY MODE + TOURNAMENT MODE)
 # ============================================================
 
 with tab_caddy:
     if tournament_mode:
-        # ---------- TOURNAMENT MODE: MINIMAL UI ---------- #
-        st.subheader("Tournament Mode")
+        # ---------------- TOURNAMENT MODE ---------------- #
+        st.subheader("Tournament Mode: Raw Yardages Only")
 
-        # Pin input + big display
         col_tm1, col_tm2 = st.columns([2, 1])
         with col_tm1:
             pin_yardage = st.number_input(
@@ -208,84 +150,63 @@ with tab_caddy:
                 help="Measured distance from your rangefinder or GPS.",
             )
         with col_tm2:
-            st.markdown("")
-            st.markdown("")
-            st.markdown(
-                f"<div style='text-align:right; font-size:22px;'>"
-                f"<b>Pin: {pin_yardage:.0f} yds</b>"
-                f"</div>",
-                unsafe_allow_html=True,
+            st.markdown("**Tournament Note**")
+            st.caption(
+                "Use this screen as a digital yardage book during play. "
+                "No plays-like recommendations or calculations are shown."
             )
 
-        st.caption(
-            "Tournament Mode behaves like a digital yardage book: "
-            "raw distances only, no plays-like math, no club recommendations, "
-            "and no strokes-gained calculations."
-        )
+        # Raw full-bag yardages
+        st.markdown("### Raw Full-Bag Yardages")
 
-        # ---- Minimal Full-Bag Table ---- #
         df_full = pd.DataFrame(full_bag)
         df_full["Ball Speed (mph)"] = df_full["Ball Speed (mph)"].round(1)
-        df_full["Carry (yds)"] = df_full["Carry (yds)"].round(1)
-        df_full["Total (yds)"] = df_full["Total (yds)"].round(1)
+        df_full["Carry (yds)"] = df_full["Carry (yds)"].round(0).astype(int)
+        df_full["Total (yds)"] = df_full["Total (yds)"].round(0).astype(int)
 
-        # Add dispersion estimate per club
+        # Dispersion column
         dispersion_list = []
         for _, row in df_full.iterrows():
             club = row["Club"]
-            category = get_club_category_for_table(club)
-            sigma = get_dispersion_sigma(
-                "scoring_wedge"
-                if "wedge" in category.lower()
-                else "short_iron" if "short" in category.lower()
-                else "mid_iron" if "mid" in category.lower()
-                else "long"
-            )
+            cat = _category_for_club(club)
+            sigma = get_dispersion_sigma(cat)
             dispersion_list.append(sigma)
 
-        df_full["Dispersion (±yds)"] = dispersion_list
+        df_full["Dispersion (±yds)"] = [round(x) for x in dispersion_list]
+        df_full = df_full[
+            [
+                "Club",
+                "Carry (yds)",
+                "Total (yds)",
+                "Dispersion (±yds)",
+                "Ball Speed (mph)",
+                "Launch (°)",
+                "Spin (rpm)",
+            ]
+        ]
+        df_full = df_full.reset_index(drop=True)
+        st.dataframe(df_full, use_container_width=True)
 
-        # Minimal view
-        df_basic = df_full[
-            ["Club", "Carry (yds)", "Total (yds)", "Dispersion (±yds)"]
-        ].reset_index(drop=True)
-
-        st.markdown("### Raw Full-Bag Yardages")
-        st.dataframe(df_basic, use_container_width=True)
-
-        # Optional advanced numbers
-        with st.expander("Show advanced ball data (ball speed, launch, spin)"):
-            df_adv = df_full[
-                [
-                    "Club",
-                    "Ball Speed (mph)",
-                    "Launch (°)",
-                    "Spin (rpm)",
-                    "Carry (yds)",
-                    "Total (yds)",
-                    "Dispersion (±yds)",
-                ]
-            ].reset_index(drop=True)
-            st.dataframe(df_adv, use_container_width=True)
-
-        # Optional scoring wedge table
-        with st.expander("Show scoring wedge / partial shot yardages"):
-            df_score = pd.DataFrame(scoring_shots)
-            df_score = df_score[["carry", "club", "shot_type", "trajectory"]]
-            df_score.columns = ["Carry (yds)", "Club", "Shot Type", "Trajectory"]
-            df_score = df_score.sort_values("Carry (yds)", ascending=False).reset_index(
-                drop=True
-            )
-            st.dataframe(df_score, use_container_width=True)
+        st.markdown("### Raw Scoring Shot Yardages (Wedges & Partials)")
+        df_score = pd.DataFrame(scoring_shots)
+        df_score = df_score[["carry", "club", "shot_type", "trajectory"]]
+        df_score.columns = ["Carry (yds)", "Club", "Shot Type", "Trajectory"]
+        df_score["Carry (yds)"] = df_score["Carry (yds)"].round(0).astype(int)
+        df_score = df_score.sort_values("Carry (yds)", ascending=False).reset_index(
+            drop=True
+        )
+        st.dataframe(df_score, use_container_width=True)
 
         st.info(
-            "Use this screen during events where only distance information is allowed. "
-            "All decision logic (plays-like, strategy, strokes gained) is disabled."
+            "In Tournament Mode, Golf Caddy acts like a digital yardage book. "
+            "No plays-like calculations, strategy suggestions, or club recommendations are used."
         )
 
     else:
+        # ---------------- ON-COURSE CADDY MODE ---------------- #
+        st.subheader("On-Course Caddy Mode")
 
-        # Mode selector: Quick vs Advanced
+        # Mode selector (Quick vs Advanced)
         mode = st.radio(
             "Mode",
             ["Quick", "Advanced"],
@@ -293,7 +214,7 @@ with tab_caddy:
             index=0 if st.session_state.mode == "Quick" else 1,
             help=(
                 "Quick mode keeps inputs minimal for fast on-course use. "
-                "Advanced mode lets you tweak every detail (trouble, green layout, pin side, tendencies)."
+                "Advanced mode lets you tweak everything (green layout, trouble, tendencies)."
             ),
         )
         st.session_state.mode = mode
@@ -330,16 +251,11 @@ with tab_caddy:
             )
 
         with col_b:
-            surface_label = st.selectbox(
-                "Surface (Current Lie)",
-                ["Fairway", "Light Rough", "Heavy Rough", "Sand", "Recovery"],
-                help="Where the ball is currently sitting.",
-            )
-            strike_label = st.radio(
-                "Strike Quality",
+            lie_label = st.radio(
+                "Ball Lie",
                 ["Good", "Ok", "Bad"],
                 horizontal=True,
-                help="Good = solid contact, Ok = slight mishit, Bad = heavy / thin / poor strike.",
+                help="Good = fairway/tee, Ok = light rough or small slope, Bad = heavy rough or poor stance.",
             )
             elevation_label = st.selectbox(
                 "Elevation to Target",
@@ -347,7 +263,6 @@ with tab_caddy:
                  "Slight Downhill", "Moderate Downhill"],
                 help="Relative height difference between you and the target.",
             )
-
 
         with col_c:
             if mode == "Advanced":
@@ -373,7 +288,6 @@ with tab_caddy:
         # Advanced options
         if mode == "Advanced":
             with st.expander("Advanced: Green, Trouble, Pin Position & Player Tendencies (Optional)"):
-
                 st.markdown("**Green Layout & Safe Center**")
                 use_center = st.checkbox(
                     "Aim at the safe center using front/back of green",
@@ -407,39 +321,38 @@ with tab_caddy:
                         "Golf Caddy will target the center of the green instead of the exact pin."
                     )
 
-                st.markdown("**Trouble & Green Firmness**")
-                tcol1, tcol2, tcol3 = st.columns(3)
-            with tcol1:
-                trouble_short_label = st.selectbox(
-                    "Trouble Short?",
-                    ["None", "Mild", "Severe"],
-                    help="How penal is a miss that finishes short of the target?",
-                )
-            with tcol2:
-                trouble_long_label = st.selectbox(
-                    "Trouble Long?",
-                    ["None", "Mild", "Severe"],
-                    help="How penal is a miss that finishes long of the target?",
-                )
-            with tcol3:
+                st.markdown("---")
+                st.markdown("**Trouble & Green Firmness (Around the Green)**")
+                tcol1, tcol2, tcol3, tcol4 = st.columns(4)
+                with tcol1:
+                    trouble_short_label = st.selectbox(
+                        "Trouble Short?",
+                        ["None", "Mild", "Severe"],
+                        help="How penal is a miss that finishes short of the green?",
+                    )
+                with tcol2:
+                    trouble_long_label = st.selectbox(
+                        "Trouble Long?",
+                        ["None", "Mild", "Severe"],
+                        help="How penal is a miss that finishes long of the green?",
+                    )
+                with tcol3:
+                    trouble_left_label = st.selectbox(
+                        "Trouble Left?",
+                        ["None", "Mild", "Severe"],
+                        help="Lateral hazards or bad rough left of the green.",
+                    )
+                with tcol4:
+                    trouble_right_label = st.selectbox(
+                        "Trouble Right?",
+                        ["None", "Mild", "Severe"],
+                        help="Lateral hazards or bad rough right of the green.",
+                    )
+
                 green_firmness_label = st.selectbox(
                     "Green Firmness",
                     ["Soft", "Medium", "Firm"],
                     help="Soft = stops close to carry distance, Firm = more roll-out.",
-                )
-
-            lrcol1, lrcol2 = st.columns(2)
-            with lrcol1:
-                trouble_left_label = st.selectbox(
-                    "Trouble Left?",
-                    ["None", "Mild", "Severe"],
-                    help="How penal is a miss that finishes well left of the target line?",
-                )
-            with lrcol2:
-                trouble_right_label = st.selectbox(
-                    "Trouble Right?",
-                    ["None", "Mild", "Severe"],
-                    help="How penal is a miss that finishes well right of the target line?",
                 )
 
                 st.markdown("---")
@@ -473,14 +386,11 @@ with tab_caddy:
 
                 st.markdown("---")
                 st.markdown("**Player Tendencies (Optional)**")
-
                 tendency = st.radio(
                     "Usual Miss (Distance)",
                     ["Neutral", "Usually Short", "Usually Long"],
                     horizontal=True,
-                    index=["Neutral", "Usually Short", "Usually Long"].index(
-                        st.session_state.tendency
-                    ),
+                    index=["Neutral", "Usually Short", "Usually Long"].index(st.session_state.tendency),
                     help="If you typically come up short or long, Golf Caddy can bias the target slightly to compensate.",
                 )
                 st.session_state.tendency = tendency
@@ -488,9 +398,7 @@ with tab_caddy:
                 skill = st.radio(
                     "Ball Striking Consistency",
                     ["Recreational", "Intermediate", "Highly Consistent"],
-                    index=["Recreational", "Intermediate", "Highly Consistent"].index(
-                        st.session_state.skill
-                    ),
+                    index=["Recreational", "Intermediate", "Highly Consistent"].index(st.session_state.skill),
                     help="Used to scale dispersion windows and strokes-gained simulations.",
                 )
                 st.session_state.skill = skill
@@ -508,22 +416,31 @@ with tab_caddy:
             green_width = 0.0
             pin_lateral_offset = 0.0
             tendency = "Neutral"
-            skill = "Intermediate"
+            skill = st.session_state.skill
 
-        # Skill factor for dispersion scaling (used in SG + charts)
-        skill_factor = skill_to_factor(skill)
-
-        all_shots = all_shots_base  # don't mutate cached shots
+        # Skill factor
+        skill_norm = skill.lower()
+        if skill_norm == "recreational":
+            skill_factor = 1.3
+        elif skill_norm == "highly consistent":
+            skill_factor = 0.8
+        else:
+            skill_factor = 1.0
 
         # Normalize for logic
         wind_dir = wind_dir_label.lower()
         wind_strength = wind_strength_label.lower()
-        strike_quality = strike_label.lower()
-        start_surface = ui_surface_to_engine_lie(surface_label)
+        lie = lie_label.lower()
+
+        # Apply tendency as a small adjustment to target
+        tendency_adj = 0.0
+        if tendency == "Usually Short":
+            tendency_adj = 3.0
+        elif tendency == "Usually Long":
+            tendency_adj = -3.0
 
         if st.button("Suggest Shots ✅"):
             with st.spinner("Crunching the numbers..."):
-
                 # Decide raw target (pin vs center of green)
                 raw_target = target_pin
                 using_center = False
@@ -536,40 +453,35 @@ with tab_caddy:
                     raw_target = (front_yards + back_yards) / 2.0
                     using_center = True
 
-                # Apply tendency (distance bias) lightly
-                if tendency == "Usually Short":
-                    raw_target += 3.0
-                elif tendency == "Usually Long":
-                    raw_target -= 3.0
-
-                # Plays-like pipeline
                 after_wind = adjust_for_wind(raw_target, wind_dir, wind_strength)
                 after_elev = apply_elevation(after_wind, elevation_label)
-                # apply_lie is now effectively "apply strike quality" to distance
-                plays_like = apply_lie(after_elev, strike_quality)
+                final_target = apply_lie(after_elev, lie) + tendency_adj
+                plays_like = final_target
 
                 st.markdown(
-                    f"### Plays-like Yardage: **{plays_like:.1f} yds** "
-                    f"{'(to safe center)' if using_center else '(to pin)'}"
+                    f"### Plays-Like Yardage: **{round(plays_like)} yds** "
+                    f"({'center of green' if using_center else 'to pin'})"
                 )
 
-                # Auto strategy heuristic (can be refined later)
+                # Auto-strategy tweak (very simple for now)
                 if use_auto_strategy:
-                    if trouble_short_label == "Severe" or trouble_long_label == "Severe":
+                    dist = plays_like
+                    if any(lbl == "Severe" for lbl in [trouble_short_label, trouble_long_label,
+                                                       trouble_left_label, trouble_right_label]):
                         strategy_label = STRATEGY_CONSERVATIVE
-                    elif plays_like < 110 and skill_factor <= 1.0:
+                    elif dist < 120 and all(lbl == "None" for lbl in [trouble_short_label,
+                                                                      trouble_long_label,
+                                                                      trouble_left_label,
+                                                                      trouble_right_label]):
                         strategy_label = STRATEGY_AGGRESSIVE
                     else:
                         strategy_label = STRATEGY_BALANCED
 
-                st.caption(f"Selected strategy: **{strategy_label}**")
+                start_surface = "fairway"
 
-                all_shots = all_shots_base  # do not mutate base
-
-                # Recommend shots
                 ranked = recommend_shots_with_sg(
                     target_total=plays_like,
-                    candidates=all_shots,
+                    candidates=all_shots_base,
                     short_trouble_label=trouble_short_label,
                     long_trouble_label=trouble_long_label,
                     left_trouble_label=trouble_left_label,
@@ -589,288 +501,182 @@ with tab_caddy:
                 )
 
                 if not ranked:
-                    st.warning("No reasonable candidate shots found near this plays-like yardage.")
+                    st.warning("No suitable shots found for this plays-like yardage.")
                 else:
-                    best = ranked[0]
-
                     st.subheader("Recommended Options")
-                    for i, s in enumerate(ranked, start=1):
+                    for i, shot in enumerate(ranked, start=1):
                         st.markdown(
-                            f"**{i}. {s['club']} — {s['shot_type']}** "
-                            f"(Carry ≈ {s['carry']:.1f} yds, Total ≈ {s['total']:.1f} yds, "
-                            f"SG ≈ {s['sg']:.3f})"
+                            f"**{i}. {shot['club']} — {shot['shot_type']}** | "
+                            f"{shot['trajectory']}  "
+                            f"(Carry ≈ {round(shot['carry'])} yds, "
+                            f"Total ≈ {round(shot['total'])} yds, "
+                            f"SG ≈ {shot['sg']:.3f})"
                         )
-                        st.caption(s["reason"])
+                        with st.expander(f"Why this shot? (#{i})", expanded=(i == 1)):
+                            st.write(shot["reason"])
 
-        # ---- Shot Pattern Preview (Top Recommendation) ---- #
-            if ranked:
-                top = ranked[0]
-                st.markdown("### Shot Pattern Preview (Top Recommendation)")
+                    # ---- Shot Pattern Preview (Top Recommendation) ---- #
+                    if ranked:
+                        top = ranked[0]
+                        st.markdown("### Shot Pattern Preview (Top Recommendation)")
 
-                # Use same dispersion logic as engine for visualization
-                cat = top["category"]
-                sigma_depth = get_dispersion_sigma(cat) * skill_factor
-                sigma_lat = get_lateral_sigma(cat) * skill_factor
+                        cat = top["category"]
+                        sigma_depth = get_dispersion_sigma(cat) * skill_factor
+                        sigma_lat = get_lateral_sigma(cat) * skill_factor
 
-                # Depth error mean = diff (total - plays_like)
-                mu_depth = top["diff"]
-                mu_lat = 0.0  # future: hook in user side-miss bias if desired
+                        mu_depth = top["total"] - plays_like
+                        mu_lat = 0.0
 
-                n_samples = 400
-                depth_errors = np.random.normal(mu_depth, sigma_depth, n_samples)
-                lat_errors = np.random.normal(mu_lat, sigma_lat, n_samples)
+                        n_samples = 400
+                        depth_errors = np.random.normal(mu_depth, sigma_depth, n_samples)
+                        lat_errors = np.random.normal(mu_lat, sigma_lat, n_samples)
 
-                df_disp = pd.DataFrame(
-                    {
-                        "Depth (yds)": depth_errors,
-                        "Lateral (yds)": lat_errors,
-                    }
-                )
+                        df_disp = pd.DataFrame(
+                            {
+                                "Depth (yds)": depth_errors,
+                                "Lateral (yds)": lat_errors,
+                            }
+                        )
 
-            # Base scatter of simulated outcomes
-            points = (
-                alt.Chart(df_disp)
-                .mark_point(filled=True, opacity=0.35, size=40)
-                .encode(
-                    x=alt.X(
-                        "Lateral (yds):Q",
-                        title="Left (-) / Right (+) relative to target line",
-                    ),
-                    y=alt.Y(
-                        "Depth (yds):Q",
-                        title="Short (-) / Long (+) relative to plays-like yardage",
-                    ),
-                )
-            )
+                        points = (
+                            alt.Chart(df_disp)
+                            .mark_point(filled=True, opacity=0.35, size=40)
+                            .encode(
+                                x=alt.X(
+                                    "Lateral (yds):Q",
+                                    title="Left (-) / Right (+) relative to target line",
+                                ),
+                                y=alt.Y(
+                                    "Depth (yds):Q",
+                                    title="Short (-) / Long (+) relative to plays-like yardage",
+                                ),
+                            )
+                        )
 
-            # Zero lines (target line and pin depth)
-            vline = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(strokeDash=[4, 4]).encode(x="x:Q")
-            hline = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(strokeDash=[4, 4]).encode(y="y:Q")
+                        vline = (
+                            alt.Chart(pd.DataFrame({"x": [0]}))
+                            .mark_rule(strokeDash=[4, 4])
+                            .encode(x="x:Q")
+                        )
+                        hline = (
+                            alt.Chart(pd.DataFrame({"y": [0]}))
+                            .mark_rule(strokeDash=[4, 4])
+                            .encode(y="y:Q")
+                        )
 
-            charts = [points, vline, hline]
+                        charts = [points, vline, hline]
 
-            # Optional green rectangle if we know the width
-            if green_width > 0:
-                rect_df = pd.DataFrame(
-                    [
-                        {
-                            "x0": -green_width / 2.0,
-                            "x1": green_width / 2.0,
-                            "y0": -5.0,
-                            "y1": 5.0,
-                        }
-                    ]
-                )
-                green_rect = (
-                    alt.Chart(rect_df)
-                    .mark_rect(fillOpacity=0.08)
-                    .encode(
-                        x="x0:Q",
-                        x2="x1:Q",
-                        y="y0:Q",
-                        y2="y1:Q",
-                    )
-                )
-                charts.append(green_rect)
+                        if green_width > 0:
+                            rect_df = pd.DataFrame(
+                                [
+                                    {
+                                        "x0": -green_width / 2.0,
+                                        "x1": green_width / 2.0,
+                                        "y0": -5.0,
+                                        "y1": 5.0,
+                                    }
+                                ]
+                            )
+                            green_rect = (
+                                alt.Chart(rect_df)
+                                .mark_rect(fillOpacity=0.08)
+                                .encode(
+                                    x="x0:Q",
+                                    x2="x1:Q",
+                                    y="y0:Q",
+                                    y2="y1:Q",
+                                )
+                            )
+                            charts.append(green_rect)
 
-            shot_pattern_chart = alt.layer(*charts).properties(
-                width="container",
-                height=320,
-                title=f"{top['club']} — {top['shot_type']} (simulated pattern)",
-            )
+                        shot_pattern_chart = alt.layer(*charts).properties(
+                            width="container",
+                            height=320,
+                            title=f"{top['club']} — {top['shot_type']} (simulated pattern)",
+                        )
 
-            with st.expander("Show 2D shot dispersion (simulation)"):
-                st.altair_chart(shot_pattern_chart, use_container_width=True)
+                        with st.expander("Show 2D shot dispersion (simulation)"):
+                            st.altair_chart(shot_pattern_chart, use_container_width=True)
 
-                # ---- Text summary of dispersion ---- #
-                radial = np.sqrt(depth_errors**2 + lat_errors**2)
+                            # Text summary
+                            radial = np.sqrt(depth_errors**2 + lat_errors**2)
+                            pct_within_5 = (radial <= 5.0).mean() * 100.0
+                            pct_within_10 = (radial <= 10.0).mean() * 100.0
 
-                pct_within_5 = (radial <= 5).mean() * 100.0
-                pct_within_10 = (radial <= 10).mean() * 100.0
+                            avg_depth = depth_errors.mean()
+                            avg_lat = lat_errors.mean()
 
-                avg_depth = depth_errors.mean()
-                avg_lat = lat_errors.mean()
+                            summary_lines = []
+                            summary_lines.append(
+                                f"- ~{pct_within_5:.0f}% of simulated shots finish within **5 yds** of the target."
+                            )
+                            summary_lines.append(
+                                f"- ~{pct_within_10:.0f}% finish within **10 yds** of the target."
+                            )
 
-                summary_lines = []
+                            if green_width > 0:
+                                half_w = green_width / 2.0
+                                on_green_mask = (
+                                    (np.abs(depth_errors) <= 5.0)
+                                    & (np.abs(lat_errors) <= half_w)
+                                )
+                                pct_on_green = on_green_mask.mean() * 100.0
+                                summary_lines.append(
+                                    f"- ~{pct_on_green:.0f}% of shots fall inside the **green area** "
+                                    f"(±5 yds depth, ±{half_w:.1f} yds lateral)."
+                                )
 
-                summary_lines.append(
-                    f"- ~{pct_within_5:.0f}% of simulated shots finish within **5 yds** of the target."
-                )
-                summary_lines.append(
-                    f"- ~{pct_within_10:.0f}% finish within **10 yds** of the target."
-                )
+                            if abs(avg_depth) >= 0.5:
+                                depth_dir = "long" if avg_depth > 0 else "short"
+                                summary_lines.append(
+                                    f"- Average depth bias: **{abs(avg_depth):.1f} yds {depth_dir}** "
+                                    f"of the plays-like yardage."
+                                )
+                            else:
+                                summary_lines.append(
+                                    "- Average depth bias: essentially **pin high** on average."
+                                )
 
-                if green_width > 0:
-                    half_w = green_width / 2.0
-                    on_green_mask = (
-                        (np.abs(depth_errors) <= 5.0)
-                        & (np.abs(lat_errors) <= half_w)
-                    )
-                    pct_on_green = on_green_mask.mean() * 100.0
-                    summary_lines.append(
-                        f"- ~{pct_on_green:.0f}% of shots fall inside the **green area** (±5 yds depth, ±{half_w:.1f} yds lateral)."
-                    )
+                            if abs(avg_lat) >= 0.5:
+                                lat_dir = "right" if avg_lat > 0 else "left"
+                                summary_lines.append(
+                                    f"- Average lateral bias: **{abs(avg_lat):.1f} yds {lat_dir}** "
+                                    f"of the target line."
+                                )
+                            else:
+                                summary_lines.append(
+                                    "- Average lateral bias: essentially **straight at the target line**."
+                                )
 
-                if abs(avg_depth) >= 0.5:
-                    depth_dir = "long" if avg_depth > 0 else "short"
-                    summary_lines.append(
-                        f"- Average depth bias: **{abs(avg_depth):.1f} yds {depth_dir}** of the plays-like yardage."
-                    )
-                else:
-                    summary_lines.append(
-                        "- Average depth bias: essentially **pin high** on average."
-                    )
-
-                if abs(avg_lat) >= 0.5:
-                    lat_dir = "right" if avg_lat > 0 else "left"
-                    summary_lines.append(
-                        f"- Average lateral bias: **{abs(avg_lat):.1f} yds {lat_dir}** of the target line."
-                    )
-                else:
-                    summary_lines.append(
-                        "- Average lateral bias: essentially **straight at the target line**."
-                    )
-
-                st.markdown("#### Pattern Summary")
-                st.markdown("\n".join(summary_lines))
-                    
-                    # Dispersion visualization for best option
-                st.markdown("### Dispersion Preview (Best Option)")
-
-                samples = simulate_dispersion_samples(
-                center_total=best["total"],
-                category=best["category"],
-                skill_factor=skill_factor,
-                n=400,
-                    )
-                df_disp = pd.DataFrame({"Total (yds)": samples})
-                df_disp["Index"] = np.arange(len(df_disp))
-
-                chart = (
-                    alt.Chart(df_disp)
-                    .mark_circle(size=30, opacity=0.5)
-                    .encode(
-                        x=alt.X("Total (yds):Q", title="End Distance (yds)"),
-                        y=alt.Y("Index:Q", axis=None),
-                        tooltip=["Total (yds)"],
-                    )
-                    .properties(height=150)
-                )
-
-                target_rule = alt.Chart(
-                    pd.DataFrame({"x": [plays_like]})
-                ).mark_rule(strokeDash=[6, 3]).encode(x="x:Q")
-
-                st.altair_chart(chart + target_rule, use_container_width=True)
+                            st.markdown("#### Pattern Summary")
+                            st.markdown("\n".join(summary_lines))
 
 
 # ============================================================
-# ---------- RANGE MODE TAB ----------
-# ============================================================
-
-with tab_range:
-    st.subheader("Range Mode: Validate & Tune Your Yardages")
-
-    st.caption(
-        "Use this tab on the practice tee: pick a club, hit a few shots, "
-        "and enter your **actual average carry** to compare against the model."
-    )
-
-    clubs = [row["Club"] for row in full_bag]
-    selected_club = st.selectbox("Club", clubs)
-
-    # Find modeled values
-    row = next((r for r in full_bag if r["Club"] == selected_club), None)
-
-    if row:
-        modeled_carry = row["Carry (yds)"]
-        modeled_total = row["Total (yds)"]
-
-        st.markdown(
-            f"**Modeled Carry:** {modeled_carry:.1f} yds &nbsp;&nbsp; "
-            f"**Modeled Total:** {modeled_total:.1f} yds"
-        )
-
-        actual = st.number_input(
-            "Your observed average carry (range or launch monitor)",
-            min_value=0.0,
-            max_value=400.0,
-            value=float(
-                st.session_state.range_actual_carries.get(selected_club, modeled_carry)
-            ),
-            step=1.0,
-        )
-
-        st.session_state.range_actual_carries[selected_club] = actual
-
-        diff = actual - modeled_carry
-        st.markdown(
-            f"- Difference (Actual − Modeled): **{diff:+.1f} yds** "
-            f"({'longer' if diff > 0 else 'shorter' if diff < 0 else 'match'})"
-        )
-
-        # Simple comparison chart
-        df_range = pd.DataFrame(
-            {
-                "Type": ["Modeled", "Actual"],
-                "Carry (yds)": [modeled_carry, actual],
-            }
-        )
-
-        chart_range = (
-            alt.Chart(df_range)
-            .mark_bar()
-            .encode(
-                x=alt.X("Type:N", title=""),
-                y=alt.Y("Carry (yds):Q"),
-                tooltip=["Type", "Carry (yds)"],
-            )
-            .properties(height=250)
-        )
-
-        st.altair_chart(chart_range, use_container_width=True)
-
-
-# ============================================================
-# ---------- YARDAGES TAB ----------
+# YARDAGES TAB
 # ============================================================
 
 with tab_yardages:
-    st.subheader("Scoring & Full-Bag Yardages")
+    st.subheader("Bag Yardages & Scoring Shots")
 
-    col_y1, col_y2 = st.columns(2)
+    c1, c2 = st.columns(2)
 
-    with col_y1:
-        st.markdown("### Scoring Shot Yardage Table")
-        df_scoring = pd.DataFrame(scoring_shots)
-        df_scoring = df_scoring[["carry", "club", "shot_type", "trajectory"]]
-        df_scoring.columns = ["Carry (yds)", "Club", "Shot Type", "Trajectory"]
-        df_scoring = df_scoring.sort_values("Carry (yds)", ascending=False).reset_index(
-            drop=True
-        )
-        st.dataframe(df_scoring, use_container_width=True)
+    with c1:
+        st.markdown("### Full-Bag Yardages")
 
-    with col_y2:
-        st.markdown("### Full Bag Yardages")
         df_full = pd.DataFrame(full_bag)
         df_full["Ball Speed (mph)"] = df_full["Ball Speed (mph)"].round(1)
-        df_full["Carry (yds)"] = df_full["Carry (yds)"].round(1)
-        df_full["Total (yds)"] = df_full["Total (yds)"].round(1)
+        df_full["Carry (yds)"] = df_full["Carry (yds)"].round(0).astype(int)
+        df_full["Total (yds)"] = df_full["Total (yds)"].round(0).astype(int)
 
         dispersion_list = []
         for _, row in df_full.iterrows():
             club = row["Club"]
-            category = get_club_category_for_table(club)
-            sigma = get_dispersion_sigma(
-                "scoring_wedge"
-                if "wedge" in category.lower()
-                else "short_iron" if "short" in category.lower()
-                else "mid_iron" if "mid" in category.lower()
-                else "long"
-            )
+            cat = _category_for_club(club)
+            sigma = get_dispersion_sigma(cat)
             dispersion_list.append(sigma)
 
-        df_full["Dispersion (±yds)"] = dispersion_list
+        df_full["Dispersion (±yds)"] = [round(x) for x in dispersion_list]
         df_full = df_full[
             [
                 "Club",
@@ -885,258 +691,293 @@ with tab_yardages:
         df_full = df_full.reset_index(drop=True)
         st.dataframe(df_full, use_container_width=True)
 
-    st.markdown("### Gapping Chart (Carry vs Club)")
-
-    df_gap = df_full.copy()
-    df_gap["Order"] = df_gap.index  # already sorted by carry in desc/asc previously
-    # For chart, sort from shortest to longest
-    df_gap = df_gap.sort_values("Carry (yds)", ascending=True).reset_index(drop=True)
-    df_gap["Index"] = df_gap.index
-
-    chart_gap = (
-        alt.Chart(df_gap)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("Index:O", title="Club (short → long)", axis=alt.Axis(labels=False)),
-            y=alt.Y("Carry (yds):Q"),
-            tooltip=["Club", "Carry (yds)", "Total (yds)", "Dispersion (±yds)"],
+    with c2:
+        st.markdown("### Scoring Shot Yardages (Wedges & Partials)")
+        df_score = pd.DataFrame(scoring_shots)
+        df_score = df_score[["carry", "club", "shot_type", "trajectory"]]
+        df_score.columns = ["Carry (yds)", "Club", "Shot Type", "Trajectory"]
+        df_score["Carry (yds)"] = df_score["Carry (yds)"].round(0).astype(int)
+        df_score = df_score.sort_values("Carry (yds)", ascending=False).reset_index(
+            drop=True
         )
-        .properties(height=300)
-    )
-    text = (
-        alt.Chart(df_gap)
-        .mark_text(dy=-10, size=11)
-        .encode(
-            x="Index:O",
-            y="Carry (yds):Q",
-            text="Club",
-        )
-    )
-
-    st.altair_chart(chart_gap + text, use_container_width=True)
+        st.dataframe(df_score, use_container_width=True)
 
 
 # ============================================================
-# ---------- COMBINE / PRACTICE TAB ----------
+# PAR STRATEGY TAB
 # ============================================================
 
-with tab_combine:
-    st.subheader("Combine / Practice (Perfect Carry Helper)")
+with tab_strategy:
+    st.subheader("Tee-to-Green Par Strategy")
 
-    st.caption(
-        "This tab helps you design a TrackMan-style practice: choose a target distance, "
-        "and Golf Caddy will suggest which club/shot and carry window should score best "
-        "based on your modeled dispersion and strokes-gained engine."
-    )
-
-    col_c1, col_c2 = st.columns(2)
-    with col_c1:
-        combine_target = st.slider(
-            "Target Pin Distance (yards)",
-            min_value=40,
-            max_value=220,
-            value=100,
-            step=5,
-        )
-    with col_c2:
-        combine_skill = st.radio(
-            "Your current ball-striking level (for this combine)",
-            ["Recreational", "Intermediate", "Highly Consistent"],
-            index=["Recreational", "Intermediate", "Highly Consistent"].index(
-                st.session_state.skill
-            ),
-        )
-        combine_skill_factor = skill_to_factor(combine_skill)
-
-    st.markdown(
-        f"**Target distance for this station:** {combine_target} yds "
-        "(you can treat this like the pin number on a real combine)."
-    )
-
-    # Filter candidates: ignore driver/3W for short targets
-    candidates = []
-    for c in all_shots_base:
-        # Keep candidates within a broad band around target
-        if 0.5 * combine_target <= c["total"] <= 1.6 * combine_target:
-            candidates.append(c)
-
-    if st.button("Compute Optimal Carry Window 🎯"):
-        if not candidates:
-            st.warning(
-                "No candidate shots near that distance. Try a different target or adjust driver speed."
-            )
+    # Hole setup
+    col_h1, col_h2 = st.columns(2)
+    with col_h1:
+        par_value = st.selectbox("Hole Par", [3, 4, 5], index=1)
+    with col_h2:
+        if par_value == 3:
+            default_len = 160
+            min_len, max_len = 90, 260
+        elif par_value == 4:
+            default_len = 410
+            min_len, max_len = 280, 520
         else:
-            best_cfg = compute_optimal_carry_for_target(
-                target_pin_yards=combine_target,
-                candidates=candidates,
-                skill_factor=combine_skill_factor,
-                short_trouble_label="None",
-                long_trouble_label="None",
-                start_surface="fairway",
-                green_firmness_label="Medium",
-                n_sim=500,
-                carry_search_window=10.0,
+            default_len = 520
+            min_len, max_len = 420, 650
+
+        hole_yards = st.slider(
+            "Hole Length (yards)",
+            min_value=float(min_len),
+            max_value=float(max_len),
+            value=float(default_len),
+            step=1.0,
+            help="Measured total yardage from the tee markers you play.",
+        )
+
+    st.markdown("**Tee & Green Context**")
+    col_s1, col_s2, col_s3 = st.columns(3)
+    with col_s1:
+        fairway_width_label = st.selectbox(
+            "Fairway Width",
+            ["Narrow", "Medium", "Wide"],
+            help="Used to estimate how often your tee shot misses the fairway.",
+        )
+    with col_s2:
+        green_width_strategy = st.slider(
+            "Green Width (yards, left-to-right)",
+            min_value=0.0,
+            max_value=50.0,
+            value=25.0,
+            step=1.0,
+            help="Optional. Used for hit-green probability and dispersion modeling.",
+        )
+    with col_s3:
+        st.caption(
+            "Narrow fairways with severe left/right trouble usually reward "
+            "a more conservative tee club."
+        )
+
+    st.markdown("**Trouble Severity Around the Hole**")
+    col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+    with col_t1:
+        trouble_short_label_s = st.selectbox(
+            "Trouble Short",
+            ["None", "Mild", "Severe"],
+            help="Penalties (bunkers, water, deep rough) if you come up short.",
+        )
+    with col_t2:
+        trouble_long_label_s = st.selectbox(
+            "Trouble Long",
+            ["None", "Mild", "Severe"],
+            help="Penalties if you go long past the green or fairway.",
+        )
+    with col_t3:
+        trouble_left_label_s = st.selectbox(
+            "Trouble Left",
+            ["None", "Mild", "Severe"],
+            help="OB, penalty areas, or bad rough to the left.",
+        )
+    with col_t4:
+        trouble_right_label_s = st.selectbox(
+            "Trouble Right",
+            ["None", "Mild", "Severe"],
+            help="OB, penalty areas, or bad rough to the right.",
+        )
+
+    # Skill factor: reuse skill from session
+    skill_label = st.session_state.skill
+    skill_norm = skill_label.lower()
+    if skill_norm == "recreational":
+        strategy_skill_factor = 1.3
+    elif skill_norm == "highly consistent":
+        strategy_skill_factor = 0.8
+    else:
+        strategy_skill_factor = 1.0
+
+    if st.button("Compute Hole Strategy 🧠"):
+        if par_value == 3:
+            st.markdown("### Par 3 Strategy")
+            res = par3_strategy(
+                hole_yards=hole_yards,
+                candidates=all_shots_base,
+                skill_factor=strategy_skill_factor,
+                green_width=green_width_strategy,
+                short_trouble_label=trouble_short_label_s,
+                long_trouble_label=trouble_long_label_s,
+                left_trouble_label=trouble_left_label_s,
+                right_trouble_label=trouble_right_label_s,
+                strategy_label=STRATEGY_BALANCED,
+                sg_profile_factor=sg_profile_factor,
+                n_sim=DEFAULT_N_SIM,
+            )
+
+            best = res.get("best")
+            if not best:
+                st.warning("No suitable clubs found for this Par 3 setup.")
+            else:
+                st.markdown(
+                    f"**Recommended: {best['club']} — {best['shot_type']} "
+                    f"(Total ≈ {round(best['total'])} yds)**"
+                )
+                st.markdown(
+                    f"- Expected strokes from tee: **{best['expected_strokes']:.2f}** "
+                    f"(vs. baseline for this length)."
+                )
+                st.markdown(
+                    f"- Hit-green probability (approx): "
+                    f"**{best['p_on_green']*100:.0f}%** "
+                    f"(inside ±5 yds depth and within green width)."
+                )
+                st.markdown(
+                    f"- ~{best['p_within_5']*100:.0f}% of shots finish within 5 yds; "
+                    f"~{best['p_within_10']*100:.0f}% within 10 yds."
+                )
+
+                st.markdown("#### Alternate Club Options")
+                alt_rows = []
+                for alt in res["alternatives"]:
+                    alt_rows.append(
+                        {
+                            "Club": alt["club"],
+                            "Shot Type": alt["shot_type"],
+                            "Total (yds)": round(alt["total"]),
+                            "Diff vs Hole (yds)": round(alt["total"] - hole_yards),
+                            "Strokes Gained (est)": round(alt["sg"], 3),
+                        }
+                    )
+                df_par3 = pd.DataFrame(alt_rows)
+                st.dataframe(df_par3, use_container_width=True)
+
+        elif par_value == 4:
+            st.markdown("### Par 4 Strategy")
+            res4 = par4_strategy(
+                hole_yards=hole_yards,
+                full_bag=full_bag,
+                skill_factor=strategy_skill_factor,
+                fairway_width_label=fairway_width_label,
+                tee_left_trouble_label=trouble_left_label_s,
+                tee_right_trouble_label=trouble_right_label_s,
                 sg_profile_factor=sg_profile_factor,
             )
 
-            if not best_cfg:
-                st.warning("Could not find a stable optimal carry configuration.")
+            best4 = res4.get("best")
+            if not best4:
+                st.warning("No tee strategy could be computed for this Par 4.")
             else:
-                b_club = best_cfg["club"]
-                b_shot = best_cfg["shot_type"]
-                aim_total = best_cfg["aim_total"]
-                sg_val = best_cfg["sg"]
-
                 st.markdown(
-                    f"### Suggested Combine Plan\n"
-                    f"- **Club / Shot:** {b_club} — {b_shot}\n"
-                    f"- **Plays-to (aimed carry/total):** ≈ **{aim_total:.1f} yds**\n"
-                    f"- **Modeled SG from this station:** ≈ **{sg_val:.3f}** per shot\n\n"
-                    f"When you run a station at {combine_target} yds, "
-                    f"try to land shots around {aim_total:.1f} yds on average."
+                    f"**Recommended Tee Club: {best4['tee_club']}** "
+                    f"(avg total ≈ {round(best4['avg_total'])} yds)"
+                )
+                st.markdown(
+                    f"- Remaining approach distance: **{round(best4['remaining_yards'])} yds**"
+                )
+                st.markdown(
+                    f"- Expected score on this hole: **{best4['expected_score']:.2f}** strokes."
+                )
+                st.markdown(
+                    f"- Strokes gained vs generic baseline from this length: "
+                    f"**{best4['sg_vs_baseline']:.2f}**"
+                )
+                st.markdown(
+                    f"- Estimated fairway miss probability: "
+                    f"**{best4['miss_prob']*100:.0f}%**"
                 )
 
-                # For visualization, also compute SG for each candidate around this target
-                ranked_for_chart = recommend_shots_with_sg(
-                    target_total=combine_target,
-                    candidates=candidates,
-                    short_trouble_label="None",
-                    long_trouble_label="None",
-                    left_trouble_label="None",
-                    right_trouble_label="None",
-                    green_firmness_label="Medium",
-                    strategy_label=STRATEGY_BALANCED,
-                    start_distance_yards=combine_target,
-                    start_surface="fairway",
-                    front_yards=0.0,
-                    back_yards=0.0,
-                    skill_factor=combine_skill_factor,
-                    pin_lateral_offset=0.0,
-                    green_width=0.0,
-                    n_sim=400,
-                    top_n=15,
-                    sg_profile_factor=sg_profile_factor,
+                st.markdown("#### Alternate Tee Options")
+                rows4 = []
+                for opt in res4["options"]:
+                    rows4.append(
+                        {
+                            "Tee Club": opt["tee_club"],
+                            "Avg Total (yds)": round(opt["avg_total"]),
+                            "Remaining (yds)": round(opt["remaining_yards"]),
+                            "Expected Score": round(opt["expected_score"], 2),
+                            "Fairway Miss %": round(opt["miss_prob"] * 100),
+                        }
+                    )
+                df_par4 = pd.DataFrame(rows4)
+                st.dataframe(df_par4, use_container_width=True)
+
+        else:  # Par 5
+            st.markdown("### Par 5 Strategy")
+            res5 = par5_strategy(
+                hole_yards=hole_yards,
+                full_bag=full_bag,
+                skill_factor=strategy_skill_factor,
+                fairway_width_label=fairway_width_label,
+                tee_left_trouble_label=trouble_left_label_s,
+                tee_right_trouble_label=trouble_right_label_s,
+                sg_profile_factor=sg_profile_factor,
+            )
+
+            best_tee = res5.get("best_tee")
+            if not best_tee:
+                st.warning("No Par 5 strategy could be computed for this setup.")
+            else:
+                st.markdown(
+                    f"**Recommended Tee Club: {best_tee['tee_club']}** "
+                    f"(avg total ≈ {round(best_tee['avg_total'])} yds)"
+                )
+                st.markdown(
+                    f"- Remaining after tee: **{round(res5['remaining_after_tee'])} yds**"
+                )
+                st.markdown(
+                    f"- Overall strategy: **{res5['strategy']}** "
+                    f"(expected score ≈ {res5['expected_score']:.2f} strokes)."
                 )
 
-                if ranked_for_chart:
-                    df_combine = pd.DataFrame(ranked_for_chart)
-                    df_combine["Label"] = (
-                        df_combine["club"] + " - " + df_combine["shot_type"]
+                if res5["layup_score"] is not None:
+                    st.markdown(
+                        f"- Layup plan (3-shot route): Target layup to "
+                        f"**{round(res5['layup_target'])} yds**, "
+                        f"expected score ≈ **{res5['layup_score']:.2f}**."
+                    )
+                if res5["go_for_it_score"] is not None:
+                    st.markdown(
+                        f"- Go-for-it plan (2-shot route): expected score ≈ "
+                        f"**{res5['go_for_it_score']:.2f}**."
                     )
 
-                    chart_sg = (
-                        alt.Chart(df_combine)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("Label:N", sort=None, title="Club / Shot"),
-                            y=alt.Y("sg:Q", title="Modeled SG per shot"),
-                            tooltip=[
-                                "club",
-                                "shot_type",
-                                "carry",
-                                "total",
-                                "sg",
-                                "expected_strokes",
-                            ],
-                        )
-                        .properties(height=320)
-                    )
-
-                    st.markdown("#### SG Comparison Across Candidate Shots")
-                    st.altair_chart(chart_sg, use_container_width=True)
-
-                st.info(
-                    "Combine tip: pick 4–6 distances (e.g., 55, 75, 95, 115, 135, 155) "
-                    "and use this tab to choose your club/shot and aim window for each station. "
-                    "Then track how close your actual averages are to the suggested carries."
+                st.markdown("#### Summary")
+                st.caption(
+                    "Use this screen for pre-round prep: decide which Par 5s you should "
+                    "attack in two versus play as true three-shot holes."
                 )
+
 
 # ============================================================
-# ---------- HOW IT WORKS TAB ----------
+# HOW IT WORKS TAB
 # ============================================================
 
 with tab_info:
-    st.subheader("How Golf Caddy Thinks")
+    st.subheader("How Golf Caddy Works")
 
     st.markdown(
         """
-### 1. Baseline Bag & Wedge Model
+        **Golf Caddy** uses a simple ball-flight and dispersion model combined with 
+        strokes-gained style expectations to help you:
 
-Golf Caddy starts from a 100 mph driver baseline and scales your entire bag
-based on your current driver speed. For wedges, it also models partial swings
-(3/4, 1/2, 1/4) with their own carry multipliers and slightly tighter dispersion
-than full swings.
+        - Turn raw yardages into **plays-like** yardages (wind, elevation, lie, tendency).
+        - Compare different clubs and shot types using **simulated outcomes**.
+        - Respect **trouble short/long/left/right** when ranking shots.
+        - Provide **Par 3, Par 4, and Par 5 strategy** based on your bag and skill level.
 
-### 2. Plays-like Yardage
+        ### Interpreting the Recommendations
 
-In Caddy mode (non-tournament), your entered pin or center-of-green distance is
-converted into a **plays-like yardage** using:
+        - **Plays-Like Yardage**: The distance the shot effectively plays after all adjustments.
+        - **SG (Strokes Gained)**: How much better or worse a choice is compared with a 
+          typical shot from that distance.
+        - **2D Shot Pattern**: Shows where your misses are likely to cluster around the target line.
 
-- **Wind**: Headwinds hurt more than tailwinds help, crosswind adds a small safety bump
-- **Elevation**: Uphill adds yardage, downhill subtracts yardage
-- **Lie**: Good / Ok / Bad alters how efficient your contact is
+        ### Modes
 
-### 3. Dispersion & Skill
+        - **Play (Caddy Mode)**: On-course assistant that suggests clubs and shots.
+        - **Yardages**: Reference tables for your bag and wedge partials.
+        - **Par Strategy**: Pre-round hole planning for Par 3s, 4s, and 5s.
+        - **Tournament Mode**: Turns the Play tab into a raw yardage book for rules-sensitive play.
 
-Each club type (scoring wedge, short iron, mid iron, long club) has a modeled
-**distance dispersion window**. Your selected skill level:
-
-- Recreational → larger dispersion
-- Intermediate → baseline
-- Highly Consistent → tighter windows
-
-These dispersion windows drive both the **dispersion charts** and the
-**strokes-gained simulations**.
-
-### 4. Strokes-Gained Engine
-
-Golf Caddy uses a simplified but tour-informed strokes-gained model:
-
-- Different **expected strokes tables** for fairway, rough, sand, and recovery
-- From your starting distance, it:
-  - Simulates many possible outcomes for each candidate shot
-  - Applies **trouble penalties** for big misses short or long
-  - Computes expected strokes after the shot and compares this to a baseline
-- The result is a **strokes-gained value (SG)**: positive is good, negative is costly.
-
-### 5. Strategy
-
-Caddy mode supports:
-
-- **Balanced**: Valuing both scoring and safety
-- **Conservative**: Extra penalty for bringing trouble into play
-- **Aggressive**: Slightly softened penalties to allow more flag-hunting
-
-Short severe trouble, longer shots, and higher dispersion push the engine
-toward more conservative plays when auto-strategy is enabled.
-
-### 6. Tournament Mode
-
-Tournament Mode removes:
-
-- Plays-like calculations
-- Club recommendations
-- Strategy / SG logic
-
-It becomes a digital yardage book: full-bag and scoring-wedge tables with
-modeled carry, total, and dispersion only. This aligns with current USGA / R&A
-guidance for allowed distance information.
-
-### 7. Range & Combine
-
-- **Range Mode** lets you compare modeled vs actual carry by club, so you can
-  calibrate your expectations and see where your modeled yardages might need
-  adjustment.
-
-- **Combine / Practice** uses the SG engine to suggest the **best club/shot and aim
-  window** for a specific target distance, similar to a TrackMan Combine
-  station. Over time, this helps you build better distance control and course
-  management instincts.
-
----
-
-Use this tool as both a **learning engine** and a **decision aid**. The more
-you practice with Range and Combine, the more confidently you can trust your
-instincts (and Tournament Mode) when the pressure is on.
-"""
+        This is not a perfect physics simulator or tour-grade SG model, 
+        but it is designed to be realistic enough to guide better decisions 
+        for most amateur golfers while keeping the interface simple and fast to use.
+        """
     )
