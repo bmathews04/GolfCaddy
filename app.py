@@ -604,28 +604,28 @@ with tab_caddy:
 
         # ---- Shot Pattern Preview (Top Recommendation) ---- #
             if ranked:
-            top = ranked[0]
-            st.markdown("### Shot Pattern Preview (Top Recommendation)")
+                top = ranked[0]
+                st.markdown("### Shot Pattern Preview (Top Recommendation)")
 
-            # Use same dispersion logic as engine for visualization
-            cat = top["category"]
-            sigma_depth = get_dispersion_sigma(cat) * skill_factor
-            sigma_lat = get_lateral_sigma(cat) * skill_factor
+                # Use same dispersion logic as engine for visualization
+                cat = top["category"]
+                sigma_depth = get_dispersion_sigma(cat) * skill_factor
+                sigma_lat = get_lateral_sigma(cat) * skill_factor
 
-            # Depth error mean = diff (total - plays_like)
-            mu_depth = top["diff"]
-            mu_lat = 0.0  # future: hook in user side-miss bias if desired
+                # Depth error mean = diff (total - plays_like)
+                mu_depth = top["diff"]
+                mu_lat = 0.0  # future: hook in user side-miss bias if desired
 
-            n_samples = 400
-            depth_errors = np.random.normal(mu_depth, sigma_depth, n_samples)
-            lat_errors = np.random.normal(mu_lat, sigma_lat, n_samples)
+                n_samples = 400
+                depth_errors = np.random.normal(mu_depth, sigma_depth, n_samples)
+                lat_errors = np.random.normal(mu_lat, sigma_lat, n_samples)
 
-            df_disp = pd.DataFrame(
-                {
-                    "Depth (yds)": depth_errors,
-                    "Lateral (yds)": lat_errors,
-                }
-            )
+                df_disp = pd.DataFrame(
+                    {
+                        "Depth (yds)": depth_errors,
+                        "Lateral (yds)": lat_errors,
+                    }
+                )
 
             # Base scatter of simulated outcomes
             points = (
