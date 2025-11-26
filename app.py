@@ -790,7 +790,7 @@ def main():
     driver_speed = st.slider(
         "Current Driver Speed (mph)",
         90,
-        115,
+        130,
         defaults["driver_speed"],
         help="Used to scale your entire bag's distances from a 100 mph baseline.",
     )
