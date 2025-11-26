@@ -603,7 +603,7 @@ with tab_caddy:
                         st.caption(s["reason"])
 
         # ---- Shot Pattern Preview (Top Recommendation) ---- #
-        if ranked:
+            if ranked:
             top = ranked[0]
             st.markdown("### Shot Pattern Preview (Top Recommendation)")
 
