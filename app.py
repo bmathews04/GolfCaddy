@@ -2,6 +2,35 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 
+import altair as alt
+
+# Allow large datasets
+alt.data_transformers.disable_max_rows()
+
+# Register a soft chart style that matches the dark theme
+alt.themes.register(
+    "golf_dark",
+    lambda: {
+        "config": {
+            "background": "transparent",
+            "view": {"stroke": "transparent"},
+            "axis": {
+                "labelColor": "#e5e7eb",
+                "titleColor": "#e5e7eb",
+                "labelFontSize": 11,
+                "titleFontSize": 12,
+            },
+            "legend": {
+                "labelColor": "#e5e7eb",
+                "titleColor": "#e5e7eb",
+            },
+        }
+    },
+)
+
+alt.themes.enable("golf_dark")
+
+
 from strokes_gained_engine import simulate_expected_strokes_for_shot
 
 # ============================
@@ -678,6 +707,52 @@ def main():
         layout="centered",
     )
 
+    # --- Global CSS Theme Polish ---
+st.markdown(
+    """
+    <style>
+
+    /* Reduce overall app padding slightly */
+    section.main > div {
+        padding-top: 1.2rem;
+    }
+
+    /* Title styling */
+    h1 {
+        font-size: 2.3rem !important;
+        margin-bottom: 0.2rem !important;
+        font-weight: 700 !important;
+    }
+
+    /* Subheaders clean spacing */
+    h3 {
+        margin-top: 1.4rem !important;
+        margin-bottom: 0.45rem !important;
+        font-weight: 600 !important;
+    }
+
+    /* DataFrame font size */
+    .stDataFrame tbody, .stDataFrame th {
+        font-size: 0.92rem !important;
+    }
+
+    /* Optional: slightly round all containers/panels */
+    .stApp [data-testid="stVerticalBlock"] {
+        border-radius: 0.75rem;
+    }
+
+    /* Make expanded sections smoother */
+    .streamlit-expanderHeader {
+        font-weight: 600 !important;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+    
+    
     st.title("Golf Caddy")
     st.caption(
         "Enter your conditions and let Golf Caddy suggest shot options based on "
