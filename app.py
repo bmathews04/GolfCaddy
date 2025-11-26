@@ -76,6 +76,24 @@ def skill_to_factor(skill: str) -> float:
         return 0.8
     return 1.0
 
+def ui_surface_to_engine_lie(surface_label: str) -> str:
+    """
+    Map the human-facing 'Surface' selector to the lie types
+    used by the strokes-gained engine.
+    """
+    s = (surface_label or "Fairway").lower()
+    if "fairway" in s:
+        return "fairway"
+    if "light" in s and "rough" in s:
+        return "rough"
+    if "heavy" in s and "rough" in s:
+        # You can change this to 'recovery' if you want to treat heavy rough as jail
+        return "rough"
+    if "sand" in s or "bunker" in s:
+        return "sand"
+    if "recovery" in s:
+        return "recovery"
+    return "fairway"
 
 def simulate_dispersion_samples(
     center_total: float,
@@ -311,11 +329,16 @@ with tab_caddy:
             )
 
         with col_b:
-            lie_label = st.radio(
-                "Ball Lie",
+            surface_label = st.selectbox(
+                "Surface (Current Lie)",
+                ["Fairway", "Light Rough", "Heavy Rough", "Sand", "Recovery"],
+                help="Where the ball is currently sitting.",
+            )
+            strike_label = st.radio(
+                "Strike Quality",
                 ["Good", "Ok", "Bad"],
                 horizontal=True,
-                help="Good = fairway/tee, Ok = light rough or small slope, Bad = heavy rough or poor stance.",
+                help="Good = solid contact, Ok = slight mishit, Bad = heavy / thin / poor strike.",
             )
             elevation_label = st.selectbox(
                 "Elevation to Target",
@@ -323,6 +346,7 @@ with tab_caddy:
                  "Slight Downhill", "Moderate Downhill"],
                 help="Relative height difference between you and the target.",
             )
+
 
         with col_c:
             if mode == "Advanced":
@@ -470,13 +494,16 @@ with tab_caddy:
             tendency = "Neutral"
             skill = "Intermediate"
 
-        # Skill factor
+        # Skill factor for dispersion scaling (used in SG + charts)
         skill_factor = skill_to_factor(skill)
+
+        all_shots = all_shots_base  # don't mutate cached shots
 
         # Normalize for logic
         wind_dir = wind_dir_label.lower()
         wind_strength = wind_strength_label.lower()
-        lie = lie_label.lower()
+        strike_quality = strike_label.lower()
+        start_surface = ui_surface_to_engine_lie(surface_label)
 
         if st.button("Suggest Shots ✅"):
             with st.spinner("Crunching the numbers..."):
@@ -502,7 +529,8 @@ with tab_caddy:
                 # Plays-like pipeline
                 after_wind = adjust_for_wind(raw_target, wind_dir, wind_strength)
                 after_elev = apply_elevation(after_wind, elevation_label)
-                plays_like = apply_lie(after_elev, lie)
+                # apply_lie is now effectively "apply strike quality" to distance
+                plays_like = apply_lie(after_elev, strike_quality)
 
                 st.markdown(
                     f"### Plays-like Yardage: **{plays_like:.1f} yds** "
@@ -531,7 +559,7 @@ with tab_caddy:
                     green_firmness_label=green_firmness_label,
                     strategy_label=strategy_label,
                     start_distance_yards=plays_like,
-                    start_surface="fairway",  # reasonable default
+                    start_surface=start_surface,
                     front_yards=front_yards,
                     back_yards=back_yards,
                     skill_factor=skill_factor,
