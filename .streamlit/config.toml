@@ -1,9 +1,9 @@
 [theme]
 base = "dark"
 
-# Golf-inspired palette
-primaryColor = "#22c55e"                     # Bright green accent (buttons, sliders)
-backgroundColor = "#020617"                  # Deep navy/black background
-secondaryBackgroundColor = "#0b1120"         # Cards / containers
-textColor = "#e5e7eb"                        # Soft off-white text
+# Augusta-inspired palette
+primaryColor = "#15803d"                # Rich green (accent: buttons, sliders)
+backgroundColor = "#020617"             # Deep navy/black backdrop
+secondaryBackgroundColor = "#04130a"    # Very dark green panels
+textColor = "#fefce8"                   # Warm cream text
 font = "sans serif"
