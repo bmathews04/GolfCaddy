@@ -1297,21 +1297,20 @@ def main():
         df_full["Dispersion (±yds)"] = dispersion_list
 
 # Reorder with your preferred order
-df_full = df_full[
-    [
-        "Club",
-        "Carry (yds)",
-        "Total (yds)",
-        "Dispersion (±yds)",   # <-- NEW COLUMN HERE
-        "Ball Speed (mph)",
-        "Launch (°)",
-        "Spin (rpm)",
-    ]
-]
+        df_full = df_full[
+            [
+                "Club",
+                "Carry (yds)",
+                "Total (yds)",
+                "Dispersion (±yds)",   # <-- NEW COLUMN HERE
+                "Ball Speed (mph)",
+                "Launch (°)",
+                "Spin (rpm)",
+            ]
+        ]
 
-df_full = df_full.reset_index(drop=True)
-st.dataframe(df_full, use_container_width=True)
-
+        df_full = df_full.reset_index(drop=True)
+        st.dataframe(df_full, use_container_width=True)
     # ---------- INFO TAB ---------- #
     with tab_info:
         st.subheader("How Golf Caddy Works")
