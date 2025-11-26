@@ -1276,8 +1276,8 @@ def main():
         df_full["Carry (yds)"] = df_full["Carry (yds)"].round(1)
         df_full["Total (yds)"] = df_full["Total (yds)"].round(1)
 
-# Compute club category for dispersion lookup
-        def get_category(club):
+# Map clubs to the same categories used in your engine
+        def get_category(club: str) -> str:
             if club in ["PW", "GW", "SW", "LW"]:
                 return "scoring_wedge"
             if club in ["9i", "8i"]:
@@ -1286,23 +1286,23 @@ def main():
                 return "mid_iron"
             return "long"
 
-# Add Dispersion (yds) column using your sigma logic
+# Add Dispersion (±yds) column using your existing sigma function
         dispersion_list = []
         for _, row in df_full.iterrows():
             club = row["Club"]
             category = get_category(club)
-            sigma = get_dispersion_sigma(category, club=club)  # use your engine’s dispersion model
+            sigma = get_dispersion_sigma(category)  # <-- no club= here
             dispersion_list.append(sigma)
 
         df_full["Dispersion (±yds)"] = dispersion_list
 
-# Reorder with your preferred order
+# Reorder columns with Dispersion after Total
         df_full = df_full[
             [
                 "Club",
                 "Carry (yds)",
                 "Total (yds)",
-                "Dispersion (±yds)",   # <-- NEW COLUMN HERE
+                "Dispersion (±yds)",   # new column
                 "Ball Speed (mph)",
                 "Launch (°)",
                 "Spin (rpm)",
@@ -1311,6 +1311,7 @@ def main():
 
         df_full = df_full.reset_index(drop=True)
         st.dataframe(df_full, use_container_width=True)
+
     # ---------- INFO TAB ---------- #
     with tab_info:
         st.subheader("How Golf Caddy Works")
