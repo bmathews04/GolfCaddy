@@ -10,6 +10,7 @@ from strokes_gained_engine import (
     build_all_candidate_shots,
     recommend_shots_with_sg,
     get_dispersion_sigma,
+    get_lateral_sigma,
     adjust_for_wind,
     apply_elevation,
     apply_lie,
@@ -601,6 +602,138 @@ with tab_caddy:
                         )
                         st.caption(s["reason"])
 
+        # ---- Shot Pattern Preview (Top Recommendation) ---- #
+        if ranked:
+            top = ranked[0]
+            st.markdown("### Shot Pattern Preview (Top Recommendation)")
+
+            # Use same dispersion logic as engine for visualization
+            cat = top["category"]
+            sigma_depth = get_dispersion_sigma(cat) * skill_factor
+            sigma_lat = get_lateral_sigma(cat) * skill_factor
+
+            # Depth error mean = diff (total - plays_like)
+            mu_depth = top["diff"]
+            mu_lat = 0.0  # future: hook in user side-miss bias if desired
+
+            n_samples = 400
+            depth_errors = np.random.normal(mu_depth, sigma_depth, n_samples)
+            lat_errors = np.random.normal(mu_lat, sigma_lat, n_samples)
+
+            df_disp = pd.DataFrame(
+                {
+                    "Depth (yds)": depth_errors,
+                    "Lateral (yds)": lat_errors,
+                }
+            )
+
+            # Base scatter of simulated outcomes
+            points = (
+                alt.Chart(df_disp)
+                .mark_point(filled=True, opacity=0.35, size=40)
+                .encode(
+                    x=alt.X(
+                        "Lateral (yds):Q",
+                        title="Left (-) / Right (+) relative to target line",
+                    ),
+                    y=alt.Y(
+                        "Depth (yds):Q",
+                        title="Short (-) / Long (+) relative to plays-like yardage",
+                    ),
+                )
+            )
+
+            # Zero lines (target line and pin depth)
+            vline = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(strokeDash=[4, 4]).encode(x="x:Q")
+            hline = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(strokeDash=[4, 4]).encode(y="y:Q")
+
+            charts = [points, vline, hline]
+
+            # Optional green rectangle if we know the width
+            if green_width > 0:
+                rect_df = pd.DataFrame(
+                    [
+                        {
+                            "x0": -green_width / 2.0,
+                            "x1": green_width / 2.0,
+                            "y0": -5.0,
+                            "y1": 5.0,
+                        }
+                    ]
+                )
+                green_rect = (
+                    alt.Chart(rect_df)
+                    .mark_rect(fillOpacity=0.08)
+                    .encode(
+                        x="x0:Q",
+                        x2="x1:Q",
+                        y="y0:Q",
+                        y2="y1:Q",
+                    )
+                )
+                charts.append(green_rect)
+
+            shot_pattern_chart = alt.layer(*charts).properties(
+                width="container",
+                height=320,
+                title=f"{top['club']} — {top['shot_type']} (simulated pattern)",
+            )
+
+            with st.expander("Show 2D shot dispersion (simulation)"):
+                st.altair_chart(shot_pattern_chart, use_container_width=True)
+
+                # ---- Text summary of dispersion ---- #
+                radial = np.sqrt(depth_errors**2 + lat_errors**2)
+
+                pct_within_5 = (radial <= 5).mean() * 100.0
+                pct_within_10 = (radial <= 10).mean() * 100.0
+
+                avg_depth = depth_errors.mean()
+                avg_lat = lat_errors.mean()
+
+                summary_lines = []
+
+                summary_lines.append(
+                    f"- ~{pct_within_5:.0f}% of simulated shots finish within **5 yds** of the target."
+                )
+                summary_lines.append(
+                    f"- ~{pct_within_10:.0f}% finish within **10 yds** of the target."
+                )
+
+                if green_width > 0:
+                    half_w = green_width / 2.0
+                    on_green_mask = (
+                        (np.abs(depth_errors) <= 5.0)
+                        & (np.abs(lat_errors) <= half_w)
+                    )
+                    pct_on_green = on_green_mask.mean() * 100.0
+                    summary_lines.append(
+                        f"- ~{pct_on_green:.0f}% of shots fall inside the **green area** (±5 yds depth, ±{half_w:.1f} yds lateral)."
+                    )
+
+                if abs(avg_depth) >= 0.5:
+                    depth_dir = "long" if avg_depth > 0 else "short"
+                    summary_lines.append(
+                        f"- Average depth bias: **{abs(avg_depth):.1f} yds {depth_dir}** of the plays-like yardage."
+                    )
+                else:
+                    summary_lines.append(
+                        "- Average depth bias: essentially **pin high** on average."
+                    )
+
+                if abs(avg_lat) >= 0.5:
+                    lat_dir = "right" if avg_lat > 0 else "left"
+                    summary_lines.append(
+                        f"- Average lateral bias: **{abs(avg_lat):.1f} yds {lat_dir}** of the target line."
+                    )
+                else:
+                    summary_lines.append(
+                        "- Average lateral bias: essentially **straight at the target line**."
+                    )
+
+                st.markdown("#### Pattern Summary")
+                st.markdown("\n".join(summary_lines))
+                    
                     # Dispersion visualization for best option
                     st.markdown("### Dispersion Preview (Best Option)")
 
