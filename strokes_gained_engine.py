@@ -1,305 +1,489 @@
 import math
-import random
+from typing import List, Dict, Tuple
 
-# ============================
-# CONFIG / CONSTANTS
-# ============================
+import numpy as np
 
-# Penalties for trouble zones
-TROUBLE_MILD_PENALTY = 0.30   # ~1/3 stroke
-TROUBLE_SEVERE_PENALTY = 0.80 # close to 1 stroke
+# -------------------- CONSTANTS -------------------- #
 
-# Short-side penalty when you miss outside the green on the pin side
-SHORT_SIDE_PENALTY_STROKES = 0.30
+BASELINE_DRIVER_SPEED = 100.0  # mph
 
-# ---- Expected Strokes Curves (Simplified) ---- #
-# Distances are in yards, putting distances in feet.
+# Full-swing wedge carries at 100 mph (center values)
+FULL_WEDGE_CARRIES = {
+    "PW": 121,
+    "GW": 107,
+    "SW": 92,
+    "LW": 78,
+}
 
-# Fairway / Good lie: approximate expected strokes to hole out
-FAIRWAY_CURVE = [
-    (250, 3.95),
-    (225, 3.75),
-    (200, 3.50),
-    (175, 3.25),
-    (150, 3.05),
-    (125, 2.85),
-    (100, 2.70),
-    (75,  2.55),
-    (50,  2.40),
-    (30,  2.20),
-    (20,  1.95),
-    (10,  1.75),
+# Full bag baseline at 100 mph driver speed
+# club, ball_speed, launch, spin, carry_center, total_center
+FULL_BAG_BASE: List[Tuple[str, float, float, int, float, float]] = [
+    ("Driver", 148, 13.0, 2500, 233, 253),
+    ("3W", 140, 14.5, 3300, 216, 233),
+    ("3H", 135, 16.0, 3900, 202, 220),
+    ("4i", 128, 14.5, 4600, 182, 194),
+    ("5i", 122, 15.5, 5000, 172, 185),
+    ("6i", 116, 17.0, 5400, 162, 172),
+    ("7i", 110, 18.5, 6200, 151, 161),
+    ("8i", 104, 20.5, 7000, 139, 149),
+    ("9i", 98, 23.0, 7800, 127, 137),
+    ("PW", 92, 28.0, 8500, 118, 124),
+    ("GW", 86, 30.0, 9000, 104, 110),
+    ("SW", 81, 32.0, 9500, 89, 95),
+    ("LW", 75, 34.0, 10500, 75, 81),
 ]
 
-# Light rough / "Ok" lie: slightly worse than fairway
-LIGHT_ROUGH_CURVE = [(d, v + 0.05) for (d, v) in FAIRWAY_CURVE]
+# Shot-type multipliers
+SHOT_MULTIPLIERS = {
+    "Full": 1.00,
+    "Choke-Down": 0.94,
+    "3/4": 0.80,
+    "1/2": 0.60,
+    "1/4": 0.40,
+}
 
-# Heavy rough / "Bad" lie: worse still
-HEAVY_ROUGH_CURVE = [(d, v + 0.15) for (d, v) in FAIRWAY_CURVE]
-
-# Around the green (chip / pitch) in yards
-AROUND_GREEN_CURVE = [
-    (30,  2.25),
-    (20,  2.05),
-    (15,  1.95),
-    (10,  1.85),
-    (5,   1.70),
-    (3,   1.60),
-    (1,   1.50),
+# Scoring shots: (club, shot type, trajectory)
+SCORING_DEFS = [
+    ("PW", "Full", "Medium-High"),
+    ("PW", "Choke-Down", "Medium"),
+    ("PW", "3/4", "Medium"),
+    ("SW", "Full", "High"),
+    ("LW", "Full", "High"),
+    ("SW", "3/4", "Medium-High"),
+    ("PW", "1/2", "Medium-Low"),
+    ("LW", "3/4", "Medium"),
+    ("SW", "1/2", "Medium-Low"),
+    ("PW", "1/4", "Low"),
+    ("LW", "1/2", "Medium-Low"),
+    ("GW", "1/4", "Low"),
+    ("SW", "1/4", "Low"),
+    ("LW", "1/4", "Low"),
+    ("GW", "Full", "Medium-High"),
+    ("GW", "Choke-Down", "Medium"),
+    ("GW", "3/4", "Medium"),
+    ("GW", "1/2", "Medium-Low"),
 ]
 
-# Putting: expected putts from distance in feet
-PUTTING_CURVE = [
-    (1, 1.00),
-    (3, 1.05),
-    (5, 1.15),
-    (8, 1.30),
-    (10,1.40),
-    (15,1.60),
-    (20,1.80),
-    (30,2.00),
-    (40,2.20),
-    (60,2.50),
-]
+# Simplified wind strengths (mph)
+WIND_STRENGTH_MAP = {
+    "none": 0,
+    "light": 5,
+    "medium": 10,
+    "heavy": 20,
+}
+
+# Strategy labels
+STRATEGY_BALANCED = "Balanced"
+STRATEGY_CONSERVATIVE = "Conservative"
+STRATEGY_AGGRESSIVE = "Aggressive"
+
+# Default number of Monte Carlo simulations per candidate
+DEFAULT_N_SIM = 800
 
 
-def _interp_curve(curve, x: float) -> float:
+# -------------------- BASIC SCALING -------------------- #
+
+def _scale_value(base_value: float, driver_speed_mph: float) -> float:
+    """Scale a baseline value linearly with driver speed."""
+    return base_value * (driver_speed_mph / BASELINE_DRIVER_SPEED)
+
+
+# -------------------- PUBLIC WIND / LIE / ELEVATION -------------------- #
+
+def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> float:
     """
-    Piecewise-linear interpolation/extrapolation on (distance, value) pairs.
-    Distances are assumed descending.
+    Tuned wind model:
+      - Into: hurts more than downwind helps
+      - Down: helps, but less than into hurts
+      - Cross: tiny safety bump so you do not under-club
+      - Short shots less affected than long shots
     """
-    if x >= curve[0][0]:
-        return curve[0][1]
-    if x <= curve[-1][0]:
-        return curve[-1][1]
+    label = wind_strength_label.lower().strip()
+    wind_mph = WIND_STRENGTH_MAP.get(label, 0)
 
-    for i in range(len(curve) - 1):
-        d1, v1 = curve[i]
-        d2, v2 = curve[i + 1]
-        if d1 >= x >= d2:
-            t = (d1 - x) / (d1 - d2)
-            return v1 + t * (v2 - v1)
+    # Scale wind effect based on shot length
+    scale = target / 150.0
+    scale = max(0.5, min(scale, 1.2))
 
-    return curve[-1][1]
+    adjusted = target
+    wd = wind_dir.lower()
+
+    if wd == "into":
+        adjusted += wind_mph * 0.9 * scale
+    elif wd == "down":
+        adjusted -= wind_mph * 0.4 * scale
+    elif wd == "cross":
+        adjusted += wind_mph * 0.1 * scale
+
+    return adjusted
 
 
-def expected_putts_from_distance(feet: float) -> float:
-    """Expected number of putts from given distance in feet."""
-    return _interp_curve(PUTTING_CURVE, feet)
-
-
-def expected_strokes_from_distance(distance_yards: float, surface: str) -> float:
+def apply_elevation(target: float, elevation_label: str) -> float:
     """
-    Expected strokes to hole out from a given distance and surface.
-
-    surface in:
-      - 'fairway'
-      - 'light_rough'
-      - 'heavy_rough'
-      - 'around_green'
-      - 'green'
+    Elevation categories -> yardage adjustment:
+      - Flat: 0 yds
+      - Slight Uphill: +5 yds
+      - Moderate Uphill: +10 yds
+      - Slight Downhill: -5 yds
+      - Moderate Downhill: -10 yds
     """
-    d = max(distance_yards, 0.0)
-    s = surface.lower()
-
-    if s == "green":
-        feet = d * 3.0
-        return expected_putts_from_distance(feet)
-    elif s == "around_green":
-        return _interp_curve(AROUND_GREEN_CURVE, d)
-    elif s == "light_rough":
-        return _interp_curve(LIGHT_ROUGH_CURVE, d)
-    elif s == "heavy_rough":
-        return _interp_curve(HEAVY_ROUGH_CURVE, d)
+    label = elevation_label.lower().strip()
+    if label.startswith("slight up"):
+        delta = 5.0
+    elif label.startswith("moderate up"):
+        delta = 10.0
+    elif label.startswith("slight down"):
+        delta = -5.0
+    elif label.startswith("moderate down"):
+        delta = -10.0
     else:
-        # default to fairway
-        return _interp_curve(FAIRWAY_CURVE, d)
+        delta = 0.0
+    return target + delta
 
 
-# ---- Dispersion helpers ---- #
+def apply_lie(target: float, lie_label: str) -> float:
+    """Adjust distance based on lie: good / ok / bad."""
+    lie = lie_label.lower().strip()
+    if lie == "good":
+        mult = 1.00
+    elif lie in ("ok", "okay"):
+        mult = 1.05
+    elif lie == "bad":
+        mult = 1.12
+    else:
+        mult = 1.00
+    return target * mult
 
-def get_lateral_sigma(category: str) -> float:
+
+# -------------------- DISPERSION MODEL -------------------- #
+
+def get_dispersion_sigma(category: str) -> float:
     """
-    Rough lateral dispersion (yards) for each club category before skill scaling.
-    These are generic averages and can be tuned later.
+    Return 1D distance dispersion (std dev in yards) for a given category.
+    This is a simple, tour-informed but not exact model.
     """
-    c = category.lower()
-    if c == "long":
-        return 15.0
-    if c == "mid_iron":
-        return 12.0
-    if c == "short_iron":
-        return 10.0
-    if c == "scoring_wedge":
+    cat = category.lower()
+    if cat == "scoring_wedge":
+        return 5.0
+    if cat == "short_iron":
+        return 7.0
+    if cat == "mid_iron":
         return 8.0
+    # long irons, hybrids, woods, driver
     return 10.0
 
 
-def sample_normal(mean: float, sigma: float) -> float:
-    """Sample from a normal distribution using Box-Muller."""
-    if sigma <= 0:
-        return mean
-    u1 = random.random()
-    u2 = random.random()
-    z = math.sqrt(-2.0 * math.log(u1 + 1e-12)) * math.cos(2 * math.pi * u2)
-    return mean + sigma * z
+def _club_category(club: str) -> str:
+    """Map a club name to a dispersion category."""
+    if club in ["PW", "GW", "SW", "LW"]:
+        return "scoring_wedge"
+    if club in ["9i", "8i"]:
+        return "short_iron"
+    if club in ["7i", "6i", "5i"]:
+        return "mid_iron"
+    return "long"
 
 
-# ---- Penalty / trouble modeling ---- #
+# -------------------- BAG & SHOT GENERATION -------------------- #
 
-def trouble_penalty(trouble_label: str) -> float:
+def _build_full_bag(driver_speed_mph: float) -> List[Dict]:
     """
-    Extra penalty strokes when a shot finishes in a trouble zone.
-
-    - Mild: small cost (e.g., tough bunker/rough)
-    - Severe: larger cost (e.g., water/OB/very bad miss)
+    Full bag distances for given driver speed.
+    Returns a list of dicts with keys:
+      Club, Ball Speed (mph), Launch (°), Spin (rpm), Carry (yds), Total (yds)
     """
-    t = trouble_label.lower()
-    if t.startswith("mild"):
-        return TROUBLE_MILD_PENALTY
-    if t.startswith("severe"):
-        return TROUBLE_SEVERE_PENALTY
+    out = []
+    for club, bs, launch, spin, carry, total in FULL_BAG_BASE:
+        out.append(
+            {
+                "Club": club,
+                "Ball Speed (mph)": _scale_value(bs, driver_speed_mph),
+                "Launch (°)": launch,
+                "Spin (rpm)": spin,
+                "Carry (yds)": _scale_value(carry, driver_speed_mph),
+                "Total (yds)": _scale_value(total, driver_speed_mph),
+            }
+        )
+    return out
+
+
+def _build_scoring_shots(driver_speed_mph: float) -> List[Dict]:
+    """
+    All scoring shots (PW–LW + shot types) for given driver speed.
+    Returns list of dicts with: club, shot_type, trajectory, carry, total.
+    """
+    shots = []
+    for club, shot_type, traj in SCORING_DEFS:
+        full_carry = _scale_value(FULL_WEDGE_CARRIES[club], driver_speed_mph)
+        carry = full_carry * SHOT_MULTIPLIERS[shot_type]
+        # For scoring shots, assume total is roughly same as carry (high, soft)
+        total = carry
+        shots.append(
+            {
+                "club": club,
+                "shot_type": shot_type,
+                "trajectory": traj,
+                "carry": carry,
+                "total": total,
+                "category": _club_category(club),
+            }
+        )
+    return shots
+
+
+def build_all_candidate_shots(driver_speed_mph: float):
+    """
+    Public entrypoint used by the app.
+
+    Returns:
+      all_shots_base: list[dict] of all candidate shots for the engine
+      scoring_shots: list[dict] of wedge/scoring shots (for table)
+      full_bag:      list[dict] of full-bag yardages (for tables/range)
+    """
+    full_bag = _build_full_bag(driver_speed_mph)
+    scoring_shots = _build_scoring_shots(driver_speed_mph)
+
+    # Build candidates:
+    #  - All full-swing clubs from full_bag
+    #  - All scoring shots (partials, etc.)
+    all_shots: List[Dict] = []
+
+    # Full-swing clubs (treat as "Full" shot type)
+    for row in full_bag:
+        club = row["Club"]
+        cat = _club_category(club)
+        all_shots.append(
+            {
+                "club": club,
+                "shot_type": "Full",
+                "trajectory": "Stock",
+                "category": cat,
+                "carry": row["Carry (yds)"],
+                "total": row["Total (yds)"],
+            }
+        )
+
+    # Add scoring wedges (these add partial swings for PW/GW/SW/LW)
+    all_shots.extend(scoring_shots)
+
+    return all_shots, scoring_shots, full_bag
+
+
+# -------------------- STROKES GAINED CORE -------------------- #
+
+# Very simple distance -> expected strokes mapping (approximate).
+# This is not a perfect PGA Tour table, but reasonable and smooth.
+_DISTANCE_STROKES_TABLE = [
+    (0.0, 1.00),
+    (3.0, 1.10),
+    (8.0, 1.30),
+    (20.0, 1.70),
+    (40.0, 1.90),
+    (80.0, 2.20),
+    (120.0, 2.50),
+    (180.0, 2.90),
+    (230.0, 3.20),
+    (280.0, 3.50),
+    (360.0, 3.90),
+]
+
+
+def _interp_expected_strokes(distance_yards: float) -> float:
+    """Linear interpolation over the distance-strokes table."""
+    d = max(0.0, float(distance_yards))
+    table = _DISTANCE_STROKES_TABLE
+
+    if d <= table[0][0]:
+        return table[0][1]
+    if d >= table[-1][0]:
+        return table[-1][1]
+
+    for i in range(len(table) - 1):
+        d0, s0 = table[i]
+        d1, s1 = table[i + 1]
+        if d0 <= d <= d1:
+            if d1 == d0:
+                return s0
+            t = (d - d0) / (d1 - d0)
+            return s0 + t * (s1 - s0)
+
+    return table[-1][1]
+
+
+def _strategy_penalty_multiplier(strategy_label: str) -> float:
+    """How harshly to punish trouble outcomes based on strategy."""
+    lab = strategy_label or STRATEGY_BALANCED
+    if lab == STRATEGY_CONSERVATIVE:
+        return 1.3
+    if lab == STRATEGY_AGGRESSIVE:
+        return 0.7
+    return 1.0
+
+
+def _trouble_severity(label: str) -> float:
+    """
+    Convert 'None' / 'Mild' / 'Severe' into additional strokes per bad miss, baseline.
+    """
+    l = (label or "None").lower()
+    if l == "mild":
+        return 0.4
+    if l == "severe":
+        return 1.0
     return 0.0
 
 
-# ---- Main SG simulation ---- #
-
-def simulate_expected_strokes_for_shot(
-    shot: dict,
+def _simulate_candidate_sg(
+    candidate: Dict,
+    target_total: float,
+    short_trouble_label: str,
+    long_trouble_label: str,
+    strategy_label: str,
     start_distance_yards: float,
-    start_surface: str,
-    target_distance_yards: float,
-    front_yards: float,
-    back_yards: float,
-    trouble_short_label: str,
-    trouble_long_label: str,
-    skill_factor: float = 1.0,
-    n_sim: int = 200,
-    pin_lateral_offset: float = 0.0,
-    green_width: float = 0.0,
-    seed: int | None = 42,
-) -> tuple[float, float]:
+    skill_factor: float,
+    n_sim: int,
+) -> Tuple[float, float]:
     """
-    Monte Carlo simulation for expected strokes from this shot choice.
-
-    Inputs:
-      - shot: dict with at least:
-          'total': expected total distance (carry + roll, yards)
-          'sigma': longitudinal distance sigma (yards)
-          'category': club category ('long', 'mid_iron', 'short_iron', 'scoring_wedge')
-      - start_distance_yards: distance from hole before the shot
-      - start_surface: 'fairway', 'light_rough', 'heavy_rough'
-      - target_distance_yards: geometric distance to the hole (pin or center)
-      - front_yards, back_yards: front/back of green (yards). If invalid, a virtual
-        green is constructed around the target distance.
-      - trouble_short_label / trouble_long_label: 'None', 'Mild', 'Severe'
-      - skill_factor: scales dispersion (1.0 = neutral, >1 = more scatter, <1 = tighter)
-      - n_sim: number of random outcomes to simulate
-      - pin_lateral_offset: lateral offset of the pin from green center (yards).
-        Negative = left, positive = right.
-      - green_width: total left-right width of the green (yards). If 0, a default
-        half-width is assumed.
-      - seed: if not None, used to seed the RNG for reproducible simulations.
+    Monte Carlo strokes-gained estimate for a single candidate shot.
 
     Returns:
-      (baseline_expected_strokes, expected_strokes_if_played)
-
-    Strokes gained for this shot choice:
-      SG = baseline_expected_strokes - expected_strokes_if_played
+      (expected_strokes_after, strokes_gained)
     """
+    cat = candidate["category"]
+    sigma_base = get_dispersion_sigma(cat)
+    sigma_eff = max(0.1, sigma_base * skill_factor)
 
-    # Optional seeding for reproducible results
-    if seed is not None:
-        random.seed(seed)
+    # Mean error (positive = long, negative = short) in yards
+    mu = candidate["total"] - target_total
 
-    # Baseline from starting position
-    baseline = expected_strokes_from_distance(start_distance_yards, start_surface)
+    # Sample shot outcomes in 1D (along line to target)
+    errors = np.random.normal(loc=mu, scale=sigma_eff, size=n_sim)
 
-    # Green model (front/back)
-    if front_yards <= 0 or back_yards <= front_yards:
-        # Virtual green around target
-        green_front = target_distance_yards - 7.0
-        green_back = target_distance_yards + 7.0
-    else:
-        green_front = front_yards
-        green_back = back_yards
+    # Distance remaining is abs(error)
+    remaining = np.abs(errors)
 
-    green_center = 0.5 * (green_front + green_back)
+    # Base strokes after shot (1 stroke to hit, plus expected strokes from remaining)
+    strokes_from_remaining = np.array(
+        [_interp_expected_strokes(d) for d in remaining]
+    )
+    strokes_samples = 1.0 + strokes_from_remaining
 
-    # Lateral half-width: use real width if provided, otherwise assume 10 yds
-    green_half_width = green_width / 2.0 if green_width > 0 else 10.0
+    # Trouble penalties for big misses short/long
+    short_severity = _trouble_severity(short_trouble_label)
+    long_severity = _trouble_severity(long_trouble_label)
+    strat_mult = _strategy_penalty_multiplier(strategy_label)
 
-    # Longitudinal dispersion (distance)
-    sigma_long = shot.get("sigma", 7.0) * skill_factor
+    if short_severity > 0.0:
+        # Consider "bad short" if > 5 yards short of target
+        short_mask = errors < -5.0
+        strokes_samples[short_mask] += short_severity * strat_mult
 
-    # Lateral dispersion by category
-    category = shot.get("category", "")
-    base_lat_sigma = get_lateral_sigma(category)
-    sigma_lat = base_lat_sigma * skill_factor
+    if long_severity > 0.0:
+        # Consider "bad long" if > 5 yards long of target
+        long_mask = errors > 5.0
+        strokes_samples[long_mask] += long_severity * strat_mult
 
-    expected_list = []
+    expected_after = float(strokes_samples.mean())
 
-    for _ in range(n_sim):
-        base_total = shot["total"]
+    # Baseline from current distance (before this shot)
+    baseline_from_here = _interp_expected_strokes(start_distance_yards)
 
-        # Sample actual distance and lateral offset relative to *green center line*
-        actual_total = sample_normal(base_total, sigma_long)
-        lateral = sample_normal(0.0, sigma_lat)
+    # Strokes gained = baseline - expected actual
+    sg = baseline_from_here - expected_after
+    return expected_after, sg
 
-        # 2D distance to hole (pin), using pin_lateral_offset
-        dx = actual_total - target_distance_yards            # long/short vs pin
-        dy = lateral - pin_lateral_offset                    # left/right vs pin
-        dist_to_hole_yards = math.sqrt(dx * dx + dy * dy)
 
-        # Initialize remaining strokes for this simulated outcome
-        if dist_to_hole_yards <= 0.5:
-            # Holed
-            rem_strokes = 0.0
-        elif dist_to_hole_yards <= 2.0:
-            # Very close putt
-            rem_strokes = expected_strokes_from_distance(dist_to_hole_yards, "green")
-        elif dist_to_hole_yards <= 40.0:
-            # Short game zone
-            on_green_like = (
-                green_front <= actual_total <= green_back
-                and abs(lateral) <= green_half_width
-            )
-            if on_green_like:
-                feet = dist_to_hole_yards * 3.0
-                rem_strokes = expected_putts_from_distance(feet)
-            else:
-                rem_strokes = expected_strokes_from_distance(
-                    dist_to_hole_yards,
-                    "around_green",
-                )
+def recommend_shots_with_sg(
+    target_total: float,
+    candidates: List[Dict],
+    short_trouble_label: str,
+    long_trouble_label: str,
+    green_firmness_label: str,
+    strategy_label: str,
+    start_distance_yards: float,
+    start_surface: str,
+    front_yards: float,
+    back_yards: float,
+    skill_factor: float,
+    pin_lateral_offset: float,
+    green_width: float,
+    n_sim: int = DEFAULT_N_SIM,
+    top_n: int = 10,
+) -> List[Dict]:
+    """
+    Rank candidate shots by strokes gained, returning up to top_n.
+
+    Many of the arguments (green_firmness_label, front/back, lateral) are
+    accepted for future expansion, but the current model focuses on
+    along-the-line distance + simple short/long trouble.
+    """
+    # Filter candidates to reasonable window around target to keep noise down
+    filtered: List[Dict] = []
+    for c in candidates:
+        # basic sanity: ignore very short chips or huge overclubs for now
+        if c["total"] < 0.5 * target_total:
+            continue
+        if c["total"] > 1.5 * target_total:
+            continue
+        filtered.append(c)
+
+    evaluated: List[Dict] = []
+    for c in filtered:
+        diff = c["total"] - target_total
+        expected_after, sg = _simulate_candidate_sg(
+            candidate=c,
+            target_total=target_total,
+            short_trouble_label=short_trouble_label,
+            long_trouble_label=long_trouble_label,
+            strategy_label=strategy_label,
+            start_distance_yards=start_distance_yards,
+            skill_factor=skill_factor,
+            n_sim=n_sim,
+        )
+
+        # Legacy "score": tighter to target is better, punish large misses
+        legacy_score = -abs(diff) - 0.2 * get_dispersion_sigma(c["category"])
+
+        # Reason string for UI
+        reason_parts = []
+        if abs(diff) <= 5:
+            reason_parts.append("Distances match the plays-like yardage closely.")
+        elif diff < -5:
+            reason_parts.append("Tends to finish a bit short of the plays-like yardage.")
         else:
-            # Longer miss: rough + possible trouble
-            if dx < 0:
-                # Short miss
-                surface_after = "light_rough"
-                rem_strokes = expected_strokes_from_distance(
-                    dist_to_hole_yards, surface_after
-                )
-                rem_strokes += trouble_penalty(trouble_short_label)
-            else:
-                # Long miss
-                surface_after = "light_rough"
-                rem_strokes = expected_strokes_from_distance(
-                    dist_to_hole_yards, surface_after
-                )
-                rem_strokes += trouble_penalty(trouble_long_label)
+            reason_parts.append("Tends to finish a bit past the plays-like yardage.")
 
-        # Short-side penalty: outside green on the pin side
-        short_side_penalty = 0.0
-        if green_width > 0 and pin_lateral_offset != 0.0:
-            # outside green laterally
-            if abs(lateral) > green_half_width and (lateral * pin_lateral_offset) > 0:
-                short_side_penalty = SHORT_SIDE_PENALTY_STROKES
+        if short_trouble_label != "None" or long_trouble_label != "None":
+            if short_trouble_label != "None" and diff >= -5:
+                reason_parts.append("Keeps most of the miss pattern away from short trouble.")
+            if long_trouble_label != "None" and diff <= 5:
+                reason_parts.append("Limits the chance of bringing long trouble directly into play.")
 
-        rem_strokes += short_side_penalty
+        if sg > 0.15:
+            reason_parts.append("Strong strokes-gained profile compared with a typical shot from here.")
+        elif sg > 0.05:
+            reason_parts.append("Slightly positive strokes-gained expectation from this position.")
+        elif sg < -0.15:
+            reason_parts.append("Higher-risk or lower-value outcome on average compared with safer options.")
 
-        total_strokes = 1.0 + rem_strokes
-        expected_list.append(total_strokes)
+        reason = " ".join(reason_parts)
 
-    expected_if_played = sum(expected_list) / len(expected_list)
-    return baseline, expected_if_played
+        evaluated.append(
+            {
+                "club": c["club"],
+                "shot_type": c["shot_type"],
+                "trajectory": c.get("trajectory", "Stock"),
+                "category": c["category"],
+                "carry": c["carry"],
+                "total": c["total"],
+                "diff": diff,
+                "score": legacy_score,
+                "expected_strokes": expected_after,
+                "sg": sg,
+                "reason": reason,
+            }
+        )
+
+    # Sort primarily by SG descending, then by legacy score
+    evaluated.sort(key=lambda x: (x["sg"], x["score"]), reverse=True)
+
+    return evaluated[:top_n]
