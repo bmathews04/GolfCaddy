@@ -1,9 +1,9 @@
 [theme]
-base = "dark"  # or "light"
+base = "dark"
 
-# Golf-y, modern palette
-primaryColor = "#22c55e"           # green accent (buttons, sliders)
-backgroundColor = "#020617"        # very dark navy
-secondaryBackgroundColor = "#0b1120"  # card/background panels
-textColor = "#e5e7eb"              # soft off-white text
+# Golf-inspired palette
+primaryColor = "#22c55e"                     # Bright green accent (buttons, sliders)
+backgroundColor = "#020617"                  # Deep navy/black background
+secondaryBackgroundColor = "#0b1120"         # Cards / containers
+textColor = "#e5e7eb"                        # Soft off-white text
 font = "sans serif"
