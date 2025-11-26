@@ -988,6 +988,7 @@ def main():
     help="Used to scale dispersion windows and strokes-gained simulations.",
     )
     st.session_state.skill = skill
+    
 else:
             # Quick mode defaults: no explicit trouble/green/tendency modeling
             use_center = False
