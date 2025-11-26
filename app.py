@@ -737,31 +737,31 @@ with tab_caddy:
                     # Dispersion visualization for best option
                 st.markdown("### Dispersion Preview (Best Option)")
 
-                    samples = simulate_dispersion_samples(
-                        center_total=best["total"],
-                        category=best["category"],
-                        skill_factor=skill_factor,
-                        n=400,
+                samples = simulate_dispersion_samples(
+                center_total=best["total"],
+                category=best["category"],
+                skill_factor=skill_factor,
+                n=400,
                     )
-                    df_disp = pd.DataFrame({"Total (yds)": samples})
-                    df_disp["Index"] = np.arange(len(df_disp))
+                df_disp = pd.DataFrame({"Total (yds)": samples})
+                df_disp["Index"] = np.arange(len(df_disp))
 
-                    chart = (
-                        alt.Chart(df_disp)
-                        .mark_circle(size=30, opacity=0.5)
-                        .encode(
-                            x=alt.X("Total (yds):Q", title="End Distance (yds)"),
-                            y=alt.Y("Index:Q", axis=None),
-                            tooltip=["Total (yds)"],
-                        )
-                        .properties(height=150)
+                chart = (
+                    alt.Chart(df_disp)
+                    .mark_circle(size=30, opacity=0.5)
+                    .encode(
+                        x=alt.X("Total (yds):Q", title="End Distance (yds)"),
+                        y=alt.Y("Index:Q", axis=None),
+                        tooltip=["Total (yds)"],
                     )
+                    .properties(height=150)
+                )
 
-                    target_rule = alt.Chart(
-                        pd.DataFrame({"x": [plays_like]})
-                    ).mark_rule(strokeDash=[6, 3]).encode(x="x:Q")
+                target_rule = alt.Chart(
+                    pd.DataFrame({"x": [plays_like]})
+                ).mark_rule(strokeDash=[6, 3]).encode(x="x:Q")
 
-                    st.altair_chart(chart + target_rule, use_container_width=True)
+                st.altair_chart(chart + target_rule, use_container_width=True)
 
 
 # ============================================================
