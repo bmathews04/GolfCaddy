@@ -1,5 +1,5 @@
 import math
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 
@@ -35,13 +35,41 @@ FULL_BAG_BASE: List[Tuple[str, float, float, int, float, float]] = [
     ("LW", 75, 34.0, 10500, 75, 81),
 ]
 
-# Shot-type multipliers (for scoring wedges)
+# Shot-type multipliers (fallback for wedges if no profile found)
 SHOT_MULTIPLIERS = {
     "Full": 1.00,
     "Choke-Down": 0.94,
     "3/4": 0.80,
     "1/2": 0.60,
     "1/4": 0.40,
+}
+
+# More detailed wedge profiles (carry multiplier, extra spin factor, dispersion tweak)
+# These are heuristic but “feel” like good tour-informed starting points.
+WEDGE_PROFILES: Dict[Tuple[str, str], Dict[str, float]] = {
+    ("PW", "Full"): {"carry_mult": 1.00, "spin_mult": 1.0, "sigma_mult": 1.0},
+    ("PW", "Choke-Down"): {"carry_mult": 0.94, "spin_mult": 1.05, "sigma_mult": 0.95},
+    ("PW", "3/4"): {"carry_mult": 0.82, "spin_mult": 1.10, "sigma_mult": 0.9},
+    ("PW", "1/2"): {"carry_mult": 0.62, "spin_mult": 1.15, "sigma_mult": 0.85},
+    ("PW", "1/4"): {"carry_mult": 0.42, "spin_mult": 1.20, "sigma_mult": 0.8},
+
+    ("GW", "Full"): {"carry_mult": 1.00, "spin_mult": 1.0, "sigma_mult": 1.0},
+    ("GW", "Choke-Down"): {"carry_mult": 0.94, "spin_mult": 1.05, "sigma_mult": 0.95},
+    ("GW", "3/4"): {"carry_mult": 0.80, "spin_mult": 1.10, "sigma_mult": 0.9},
+    ("GW", "1/2"): {"carry_mult": 0.60, "spin_mult": 1.15, "sigma_mult": 0.85},
+    ("GW", "1/4"): {"carry_mult": 0.40, "spin_mult": 1.20, "sigma_mult": 0.8},
+
+    ("SW", "Full"): {"carry_mult": 1.00, "spin_mult": 1.0, "sigma_mult": 1.0},
+    ("SW", "Choke-Down"): {"carry_mult": 0.94, "spin_mult": 1.05, "sigma_mult": 0.95},
+    ("SW", "3/4"): {"carry_mult": 0.80, "spin_mult": 1.10, "sigma_mult": 0.9},
+    ("SW", "1/2"): {"carry_mult": 0.60, "spin_mult": 1.20, "sigma_mult": 0.85},
+    ("SW", "1/4"): {"carry_mult": 0.40, "spin_mult": 1.25, "sigma_mult": 0.8},
+
+    ("LW", "Full"): {"carry_mult": 1.00, "spin_mult": 1.0, "sigma_mult": 1.0},
+    ("LW", "Choke-Down"): {"carry_mult": 0.92, "spin_mult": 1.05, "sigma_mult": 0.95},
+    ("LW", "3/4"): {"carry_mult": 0.78, "spin_mult": 1.15, "sigma_mult": 0.9},
+    ("LW", "1/2"): {"carry_mult": 0.58, "spin_mult": 1.25, "sigma_mult": 0.85},
+    ("LW", "1/4"): {"carry_mult": 0.38, "spin_mult": 1.30, "sigma_mult": 0.8},
 }
 
 # Scoring shots: (club, shot type, trajectory)
@@ -82,14 +110,34 @@ STRATEGY_AGGRESSIVE = "Aggressive"
 # Default number of Monte Carlo simulations per candidate
 DEFAULT_N_SIM = 800
 
+# Launch “windows” per club (approx tour-ish ranges)
+# Not currently used by app.py, but available for future Range/Coach modes.
+LAUNCH_WINDOWS = {
+    "Driver": {"launch_deg": (10, 15), "spin_rpm": (2000, 2800)},
+    "3W": {"launch_deg": (11, 16), "spin_rpm": (2600, 3300)},
+    "3H": {"launch_deg": (13, 18), "spin_rpm": (3200, 4000)},
+    "4i": {"launch_deg": (13, 17), "spin_rpm": (3800, 4600)},
+    "5i": {"launch_deg": (14, 18), "spin_rpm": (4300, 5200)},
+    "6i": {"launch_deg": (15, 19), "spin_rpm": (4700, 5600)},
+    "7i": {"launch_deg": (16, 20), "spin_rpm": (5000, 6500)},
+    "8i": {"launch_deg": (18, 22), "spin_rpm": (6000, 7500)},
+    "9i": {"launch_deg": (20, 24), "spin_rpm": (7000, 8500)},
+    "PW": {"launch_deg": (24, 30), "spin_rpm": (8000, 9500)},
+    "GW": {"launch_deg": (26, 32), "spin_rpm": (8500, 10000)},
+    "SW": {"launch_deg": (28, 36), "spin_rpm": (9000, 10500)},
+    "LW": {"launch_deg": (30, 38), "spin_rpm": (9000, 11000)},
+}
+
 
 # ============================================================
 # BASIC SCALING & PUBLIC ADJUST FUNCTIONS
 # ============================================================
 
 def _scale_value(base_value: float, driver_speed_mph: float) -> float:
-    """Scale a baseline value linearly with driver speed."""
-    return base_value * (driver_speed_mph / BASELINE_DRIVER_SPEED)
+    """Scale a baseline value slightly nonlinearly with driver speed."""
+    factor = driver_speed_mph / BASELINE_DRIVER_SPEED
+    # Mildly super-linear scaling to reflect speed benefits (~1.03 exponent).
+    return base_value * (factor ** 1.03)
 
 
 def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> float:
@@ -189,25 +237,88 @@ def _club_category(club: str) -> str:
 
 
 # ============================================================
+# BALL FLIGHT / ROLL MODEL (SIMPLIFIED)
+# ============================================================
+
+def _estimate_roll_from_spin(
+    base_roll: float,
+    spin_rpm: float,
+    green_firmness_label: str,
+    category: str,
+) -> float:
+    """
+    Adjust roll-out based on spin, firmness, and club category.
+    Higher spin + softer greens = less roll.
+    Lower spin + firm = more roll.
+    """
+    firmness = (green_firmness_label or "Medium").lower()
+    cat = (category or "").lower()
+
+    # Normalize spin relative to a mid-iron-ish reference.
+    ref_spin = 5500.0
+    spin_ratio = max(0.5, min(spin_rpm / ref_spin, 1.8))
+
+    # Firmness multiplier
+    if firmness == "soft":
+        firm_mult = 0.6
+    elif firmness == "firm":
+        firm_mult = 1.4
+    else:
+        firm_mult = 1.0
+
+    # Category influence: wedges roll less, long clubs more.
+    if cat == "scoring_wedge":
+        cat_mult = 0.5
+    elif cat == "short_iron":
+        cat_mult = 0.8
+    elif cat == "mid_iron":
+        cat_mult = 1.0
+    else:
+        cat_mult = 1.3
+
+    # Higher spin → less roll
+    roll = base_roll * firm_mult * cat_mult / spin_ratio
+
+    # Clamp for sanity
+    return max(0.0, roll)
+
+
+# ============================================================
 # BAG & SHOT GENERATION
 # ============================================================
 
-def _build_full_bag(driver_speed_mph: float):
+def _build_full_bag(driver_speed_mph: float, green_firmness_label: str = "Medium"):
     """
-    Full bag distances for given driver speed.
-    Returns a list of dicts with keys:
+    Full bag distances for given driver speed with simple carry/roll model.
+    Returns a list of dicts with:
       Club, Ball Speed (mph), Launch (°), Spin (rpm), Carry (yds), Total (yds)
     """
     out = []
-    for club, bs, launch, spin, carry, total in FULL_BAG_BASE:
+    for club, bs, launch, spin, carry_base, total_base in FULL_BAG_BASE:
+        cat = _club_category(club)
+
+        # Scale ball speed & carry with driver speed
+        bs_scaled = _scale_value(bs, driver_speed_mph)
+        carry_scaled = _scale_value(carry_base, driver_speed_mph)
+
+        # Base roll from baseline spec
+        base_roll = max(0.0, total_base - carry_base)
+        roll_adj = _estimate_roll_from_spin(
+            base_roll=base_roll,
+            spin_rpm=spin,
+            green_firmness_label=green_firmness_label,
+            category=cat,
+        )
+        total_scaled = carry_scaled + roll_adj
+
         out.append(
             {
                 "Club": club,
-                "Ball Speed (mph)": _scale_value(bs, driver_speed_mph),
+                "Ball Speed (mph)": bs_scaled,
                 "Launch (°)": launch,
                 "Spin (rpm)": spin,
-                "Carry (yds)": _scale_value(carry, driver_speed_mph),
-                "Total (yds)": _scale_value(total, driver_speed_mph),
+                "Carry (yds)": carry_scaled,
+                "Total (yds)": total_scaled,
             }
         )
     return out
@@ -220,9 +331,17 @@ def _build_scoring_shots(driver_speed_mph: float):
     """
     shots = []
     for club, shot_type, traj in SCORING_DEFS:
-        full_carry = _scale_value(FULL_WEDGE_CARRIES[club], driver_speed_mph)
-        carry = full_carry * SHOT_MULTIPLIERS[shot_type]
-        total = carry  # high, soft scoring shots ≈ carry
+        base_full_carry = _scale_value(FULL_WEDGE_CARRIES[club], driver_speed_mph)
+
+        profile = WEDGE_PROFILES.get((club, shot_type))
+        if profile:
+            carry = base_full_carry * profile["carry_mult"]
+        else:
+            carry = base_full_carry * SHOT_MULTIPLIERS.get(shot_type, 1.0)
+
+        # For now assume total ≈ carry for scoring wedges (they stop quickly).
+        total = carry
+
         shots.append(
             {
                 "club": club,
@@ -245,10 +364,12 @@ def build_all_candidate_shots(driver_speed_mph: float):
       scoring_shots: list[dict] of wedge/scoring shots (for table)
       full_bag:      list[dict] of full-bag yardages (for tables/range)
     """
-    full_bag = _build_full_bag(driver_speed_mph)
+    # Use "Medium" as baseline firmness for bag modeling – the app passes
+    # firmness later into SG sims for more detailed behavior.
+    full_bag = _build_full_bag(driver_speed_mph, green_firmness_label="Medium")
     scoring_shots = _build_scoring_shots(driver_speed_mph)
 
-    all_shots = []
+    all_shots: List[Dict] = []
 
     # Full-swing clubs (treat as "Full" shot type)
     for row in full_bag:
@@ -272,29 +393,79 @@ def build_all_candidate_shots(driver_speed_mph: float):
 
 
 # ============================================================
-# STROKES-GAINED CORE
+# STROKES-GAINED TABLES (BY LIE TYPE)
 # ============================================================
 
-# Very simple distance -> expected strokes mapping (approximate).
-_DISTANCE_STROKES_TABLE = [
-    (0.0, 1.00),
-    (3.0, 1.10),
-    (8.0, 1.30),
-    (20.0, 1.70),
-    (40.0, 1.90),
-    (80.0, 2.20),
-    (120.0, 2.50),
-    (180.0, 2.90),
-    (230.0, 3.20),
-    (280.0, 3.50),
-    (360.0, 3.90),
-]
+# Approximate “tour-ish” baseline from ShotLink-style data,
+# but smoothed and simplified.
+_EXPECTED_STROKES_BY_LIE = {
+    "fairway": [
+        (0.0, 1.00),
+        (3.0, 1.07),
+        (8.0, 1.25),
+        (20.0, 1.65),
+        (40.0, 1.90),
+        (80.0, 2.20),
+        (120.0, 2.55),
+        (160.0, 2.80),
+        (200.0, 3.00),
+        (240.0, 3.25),
+        (280.0, 3.50),
+        (360.0, 3.90),
+    ],
+    "rough": [
+        (0.0, 1.05),
+        (3.0, 1.12),
+        (8.0, 1.35),
+        (20.0, 1.80),
+        (40.0, 2.05),
+        (80.0, 2.45),
+        (120.0, 2.80),
+        (160.0, 3.05),
+        (200.0, 3.30),
+        (240.0, 3.60),
+        (280.0, 3.85),
+        (360.0, 4.25),
+    ],
+    "sand": [
+        (0.0, 1.10),
+        (3.0, 1.20),
+        (8.0, 1.45),
+        (20.0, 1.95),
+        (40.0, 2.25),
+        (80.0, 2.70),
+        (120.0, 3.10),
+        (160.0, 3.40),
+        (200.0, 3.70),
+        (240.0, 4.00),
+        (280.0, 4.30),
+        (360.0, 4.70),
+    ],
+    "recovery": [
+        (0.0, 1.20),
+        (10.0, 1.60),
+        (30.0, 2.10),
+        (60.0, 2.60),
+        (100.0, 3.10),
+        (150.0, 3.60),
+        (220.0, 4.10),
+        (300.0, 4.60),
+        (380.0, 5.00),
+    ],
+    "green": [
+        (0.0, 1.00),
+        (3.0, 1.20),
+        (8.0, 1.40),
+        (20.0, 1.80),
+    ],
+}
 
 
-def _interp_expected_strokes(distance_yards: float) -> float:
-    """Linear interpolation over the distance-strokes table."""
+def _interp_expected_strokes(distance_yards: float, lie_type: str) -> float:
+    """Linear interpolation over the distance-strokes table for a given lie."""
     d = max(0.0, float(distance_yards))
-    table = _DISTANCE_STROKES_TABLE
+    lie = (lie_type or "fairway").lower()
+    table = _EXPECTED_STROKES_BY_LIE.get(lie, _EXPECTED_STROKES_BY_LIE["fairway"])
 
     if d <= table[0][0]:
         return table[0][1]
@@ -335,6 +506,10 @@ def _trouble_severity(label: str) -> float:
     return 0.0
 
 
+# ============================================================
+# SG SIMULATION
+# ============================================================
+
 def _simulate_candidate_sg(
     candidate: Dict,
     target_total: float,
@@ -342,7 +517,9 @@ def _simulate_candidate_sg(
     long_trouble_label: str,
     strategy_label: str,
     start_distance_yards: float,
+    start_surface: str,
     skill_factor: float,
+    green_firmness_label: str,
     n_sim: int,
 ):
     """
@@ -353,6 +530,8 @@ def _simulate_candidate_sg(
     """
     cat = candidate["category"]
     sigma_base = get_dispersion_sigma(cat)
+
+    # Skill factor: recreational > 1, highly consistent < 1
     sigma_eff = max(0.1, sigma_base * skill_factor)
 
     # Mean error (positive = long, negative = short) in yards
@@ -364,9 +543,13 @@ def _simulate_candidate_sg(
     # Distance remaining is abs(error)
     remaining = np.abs(errors)
 
-    # Base strokes after shot (1 to hit + expected from remaining distance)
+    # Assume outcome lie is fairway/green most of the time;
+    # for now we keep same lie as starting surface for expected strokes.
+    outcome_lie = start_surface or "fairway"
+
+    # Base strokes after shot (1 stroke to hit, plus expected strokes from remaining)
     strokes_from_remaining = np.array(
-        [_interp_expected_strokes(d) for d in remaining]
+        [_interp_expected_strokes(d, outcome_lie) for d in remaining]
     )
     strokes_samples = 1.0 + strokes_from_remaining
 
@@ -386,12 +569,16 @@ def _simulate_candidate_sg(
     expected_after = float(strokes_samples.mean())
 
     # Baseline from current distance (before this shot)
-    baseline_from_here = _interp_expected_strokes(start_distance_yards)
+    baseline_from_here = _interp_expected_strokes(start_distance_yards, start_surface)
 
     # SG = baseline - expected actual
     sg = baseline_from_here - expected_after
     return expected_after, sg
 
+
+# ============================================================
+# PUBLIC RECOMMENDER
+# ============================================================
 
 def recommend_shots_with_sg(
     target_total: float,
@@ -413,9 +600,9 @@ def recommend_shots_with_sg(
     """
     Rank candidate shots by strokes gained, returning up to top_n.
 
-    Many arguments (green_firmness_label, front/back, lateral) are accepted
-    for future expansion, but the current model focuses on along-the-line
-    distance + simple short/long trouble.
+    Arguments front/back/pin_lateral/green_width are accepted for future
+    expansion (2D dispersion / lateral trouble), but the current model
+    focuses on along-the-line distance + simple short/long trouble.
     """
     # Filter candidates to reasonable window around target to keep noise down
     filtered: List[Dict] = []
@@ -437,7 +624,9 @@ def recommend_shots_with_sg(
             long_trouble_label=long_trouble_label,
             strategy_label=strategy_label,
             start_distance_yards=start_distance_yards,
+            start_surface=start_surface,
             skill_factor=skill_factor,
+            green_firmness_label=green_firmness_label,
             n_sim=n_sim,
         )
 
@@ -487,3 +676,90 @@ def recommend_shots_with_sg(
     # Sort by SG first, then by legacy proximity score
     evaluated.sort(key=lambda x: (x["sg"], x["score"]), reverse=True)
     return evaluated[:top_n]
+
+
+# ============================================================
+# EXTRA HELPERS FOR FUTURE MODES
+# ============================================================
+
+def get_launch_window(club: str) -> Optional[Dict[str, Tuple[float, float]]]:
+    """
+    Return recommended launch & spin window for a given club, if defined.
+    Not currently used by app.py, but available for Range/Coach modes.
+    """
+    return LAUNCH_WINDOWS.get(club)
+
+
+def compute_optimal_carry_for_target(
+    target_pin_yards: float,
+    candidates: List[Dict],
+    skill_factor: float,
+    short_trouble_label: str = "None",
+    long_trouble_label: str = "None",
+    start_surface: str = "fairway",
+    green_firmness_label: str = "Medium",
+    n_sim: int = 600,
+    carry_search_window: float = 10.0,
+) -> Dict:
+    """
+    Prototype "perfect carry" helper for Combine-style or practice modes.
+
+    For each candidate shot, searches around its natural total distance
+    +/- carry_search_window and finds the aiming point (plays-to distance)
+    that yields the best strokes-gained profile relative to the pin.
+
+    Returns the best configuration:
+      {
+        "club": ...,
+        "shot_type": ...,
+        "best_target_total": ...,
+        "best_sg": ...,
+      }
+    """
+    best_cfg = None
+
+    for c in candidates:
+        # We treat the candidate's natural total as central guess
+        base_total = c["total"]
+        cat = c["category"]
+
+        # Explore a grid of offsets (aim slightly short/long)
+        offsets = np.linspace(-carry_search_window, carry_search_window, 9)
+
+        for off in offsets:
+            aim_total = base_total + off
+            if aim_total <= 0:
+                continue
+
+            # When we aim shorter/longer, "target_total" in SG is aim_total,
+            # but baseline SG is still referenced to pin distance.
+            target_total_for_sg = aim_total
+            start_distance = aim_total  # plays-like distance of the strike
+
+            expected_after, sg = _simulate_candidate_sg(
+                candidate=c,
+                target_total=target_total_for_sg,
+                short_trouble_label=short_trouble_label,
+                long_trouble_label=long_trouble_label,
+                strategy_label=STRATEGY_BALANCED,
+                start_distance_yards=start_distance,
+                start_surface=start_surface,
+                skill_factor=skill_factor,
+                green_firmness_label=green_firmness_label,
+                n_sim=n_sim,
+            )
+
+            # We care about how good this is relative to the pin distance
+            # as well, but for now we rank purely by SG from this position.
+            cfg = {
+                "club": c["club"],
+                "shot_type": c["shot_type"],
+                "aim_offset": off,
+                "aim_total": aim_total,
+                "sg": sg,
+            }
+
+            if best_cfg is None or sg > best_cfg["sg"]:
+                best_cfg = cfg
+
+    return best_cfg or {}
