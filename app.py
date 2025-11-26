@@ -750,9 +750,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-    
-    
     st.title("Golf Caddy")
     st.caption(
         "Enter your conditions and let Golf Caddy suggest shot options based on "
