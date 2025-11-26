@@ -406,27 +406,40 @@ with tab_caddy:
                         "Golf Caddy will target the center of the green instead of the exact pin."
                     )
 
-                st.markdown("---")
                 st.markdown("**Trouble & Green Firmness**")
                 tcol1, tcol2, tcol3 = st.columns(3)
-                with tcol1:
-                    trouble_short_label = st.selectbox(
-                        "Trouble Short?",
-                        ["None", "Mild", "Severe"],
-                        help="How penal is a miss that finishes short of the target?",
-                    )
-                with tcol2:
-                    trouble_long_label = st.selectbox(
-                        "Trouble Long?",
-                        ["None", "Mild", "Severe"],
-                        help="How penal is a miss that finishes long of the target?",
-                    )
-                with tcol3:
-                    green_firmness_label = st.selectbox(
-                        "Green Firmness",
-                        ["Soft", "Medium", "Firm"],
-                        help="Soft = stops close to carry distance, Firm = more roll-out.",
-                    )
+                    with tcol1:
+                trouble_short_label = st.selectbox(
+                    "Trouble Short?",
+                    ["None", "Mild", "Severe"],
+                    help="How penal is a miss that finishes short of the target?",
+                )
+            with tcol2:
+                trouble_long_label = st.selectbox(
+                    "Trouble Long?",
+                    ["None", "Mild", "Severe"],
+                    help="How penal is a miss that finishes long of the target?",
+                )
+            with tcol3:
+                green_firmness_label = st.selectbox(
+                    "Green Firmness",
+                    ["Soft", "Medium", "Firm"],
+                    help="Soft = stops close to carry distance, Firm = more roll-out.",
+                )
+
+            lrcol1, lrcol2 = st.columns(2)
+            with lrcol1:
+                trouble_left_label = st.selectbox(
+                    "Trouble Left?",
+                    ["None", "Mild", "Severe"],
+                    help="How penal is a miss that finishes well left of the target line?",
+                )
+            with lrcol2:
+                trouble_right_label = st.selectbox(
+                    "Trouble Right?",
+                    ["None", "Mild", "Severe"],
+                    help="How penal is a miss that finishes well right of the target line?",
+                )
 
                 st.markdown("---")
                 st.markdown("**Pin Lateral Position (Optional)**")
@@ -488,6 +501,8 @@ with tab_caddy:
             back_yards = 0.0
             trouble_short_label = "None"
             trouble_long_label = "None"
+            trouble_left_label = "None"
+            trouble_right_label = "None"
             green_firmness_label = "Medium"
             green_width = 0.0
             pin_lateral_offset = 0.0
@@ -556,6 +571,8 @@ with tab_caddy:
                     candidates=all_shots,
                     short_trouble_label=trouble_short_label,
                     long_trouble_label=trouble_long_label,
+                    left_trouble_label=trouble_left_label,
+                    right_trouble_label=trouble_right_label,
                     green_firmness_label=green_firmness_label,
                     strategy_label=strategy_label,
                     start_distance_yards=plays_like,
@@ -852,6 +869,8 @@ with tab_combine:
                     candidates=candidates,
                     short_trouble_label="None",
                     long_trouble_label="None",
+                    left_trouble_label="None",
+                    right_trouble_label="None",
                     green_firmness_label="Medium",
                     strategy_label=STRATEGY_BALANCED,
                     start_distance_yards=combine_target,
