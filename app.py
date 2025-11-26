@@ -4,12 +4,11 @@ import altair as alt
 
 import altair as alt
 
-# Allow large datasets
 alt.data_transformers.disable_max_rows()
 
-# Register a soft chart style that matches the dark theme
+# Augusta-aligned dark chart theme
 alt.themes.register(
-    "golf_dark",
+    "golf_augusta_dark",
     lambda: {
         "config": {
             "background": "transparent",
@@ -27,8 +26,7 @@ alt.themes.register(
         }
     },
 )
-
-alt.themes.enable("golf_dark")
+alt.themes.enable("golf_augusta_dark")
 
 
 from strokes_gained_engine import simulate_expected_strokes_for_shot
@@ -707,12 +705,11 @@ def main():
         layout="centered",
     )
 
-# --- Global CSS Theme Polish ---
+# --- Global CSS Theme Polish (Augusta) ---
     st.markdown(
     """
     <style>
-
-    /* Reduce overall app padding slightly */
+    /* Overall padding */
     section.main > div {
         padding-top: 1.2rem;
     }
@@ -722,9 +719,10 @@ def main():
         font-size: 2.3rem !important;
         margin-bottom: 0.2rem !important;
         font-weight: 700 !important;
+        letter-spacing: 0.02em;
     }
 
-    /* Subheaders clean spacing */
+    /* Subheaders spacing */
     h3 {
         margin-top: 1.4rem !important;
         margin-bottom: 0.45rem !important;
@@ -736,14 +734,34 @@ def main():
         font-size: 0.92rem !important;
     }
 
-    /* Slightly round all containers/panels */
-    .stApp [data-testid="stVerticalBlock"] {
-        border-radius: 0.75rem;
+    /* Buttons: Augusta green with cream text */
+    .stButton>button {
+        border-radius: 999px;
+        padding: 0.4rem 1.3rem;
+        border: 1px solid rgba(248, 250, 252, 0.1);
+        background: linear-gradient(135deg, #166534, #15803d);
+        color: #fefce8;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+    }
+    .stButton>button:hover {
+        border-color: #fbbf24;
+        background: linear-gradient(135deg, #15803d, #166534);
+        color: #fefce8;
     }
 
-    /* Make expanded sections smoother */
+    /* Small pill-style checkboxes / radios look better on dark themes */
+    .stRadio>div>label, .stCheckbox>label {
+        font-size: 0.93rem;
+    }
+
+    /* Expanders: subtle border and rounded corners */
     .streamlit-expanderHeader {
         font-weight: 600 !important;
+    }
+    [data-testid="stExpander"] {
+        border-radius: 0.75rem;
+        border: 1px solid rgba(148, 163, 184, 0.35);
     }
 
     </style>
@@ -758,31 +776,45 @@ def main():
         "professional-style decision logic and strokes gained."
     )
 
+# --- Persist basic user settings ---
+    defaults = st.session_state
+
+    defaults.setdefault("driver_speed", 100)
+    defaults.setdefault("mode", "Quick")
+    defaults.setdefault("skill", "Intermediate")
+    defaults.setdefault("tendency", "Neutral")
+
+
+
     # Driver speed and precomputed data (shared across tabs)
     driver_speed = st.slider(
-        "Current Driver Speed (mph)",
-        90,
-        115,
-        100,
-        help="Used to scale your entire bag's distances from a 100 mph baseline.",
-    )
+    "Current Driver Speed (mph)",
+    90,
+    115,
+    defaults["driver_speed"],
+    help="Used to scale your entire bag's distances from a 100 mph baseline.",
+)
+    st.session_state.driver_speed = driver_speed
+
     all_shots_base, scoring_shots, full_bag = build_all_candidate_shots(driver_speed)
 
     # Tabs for Caddy (on-course), Yardages (practice), Info
-    tab_caddy, tab_yardages, tab_info = st.tabs(["Caddy", "Yardages", "Info"])
+    tab_caddy, tab_yardages, tab_info = st.tabs(["Play", "Yardages", "How it Works"])
 
     # ---------- CADDY TAB ---------- #
     with tab_caddy:
         # Mode selector
         mode = st.radio(
-            "Mode",
-            ["Quick", "Advanced"],
-            horizontal=True,
-            help=(
-                "Quick mode keeps inputs minimal for fast on-course use. "
-                "Advanced mode lets you tweak every detail (trouble, green layout, pin side, tendencies)."
+    "Mode",
+    ["Quick", "Advanced"],
+    horizontal=True,
+    index=0 if st.session_state.mode == "Quick" else 1,
+    help=(
+        "Quick mode keeps inputs minimal for fast on-course use. "
+        "Advanced mode lets you tweak every detail (trouble, green layout, pin side, tendencies)."
             ),
         )
+        st.session_state.mode = mode
 
         # Core inputs
         pin_col1, pin_col2 = st.columns([2, 1])
@@ -941,16 +973,21 @@ def main():
                 st.markdown("---")
                 st.markdown("**Player Tendencies (Optional)**")
                 tendency = st.radio(
-                    "Usual Miss (Distance)",
-                    ["Neutral", "Usually Short", "Usually Long"],
-                    horizontal=True,
-                    help="If you typically come up short or long, Golf Caddy can bias the target slightly to compensate.",
-                )
-                skill = st.radio(
-                    "Ball Striking Consistency",
-                    ["Recreational", "Intermediate", "Highly Consistent"],
-                    help="Used to scale dispersion windows and strokes-gained simulations.",
-                )
+    "Usual Miss (Distance)",
+    ["Neutral", "Usually Short", "Usually Long"],
+    horizontal=True,
+    index=["Neutral", "Usually Short", "Usually Long"].index(st.session_state.tendency),
+    help="If you typically come up short or long, Golf Caddy can bias the target slightly to compensate.",
+    )
+    st.session_state.tendency = tendency
+
+    skill = st.radio(
+    "Ball Striking Consistency",
+    ["Recreational", "Intermediate", "Highly Consistent"],
+    index=["Recreational", "Intermediate", "Highly Consistent"].index(st.session_state.skill),
+    help="Used to scale dispersion windows and strokes-gained simulations.",
+    )
+    st.session_state.skill = skill
         else:
             # Quick mode defaults: no explicit trouble/green/tendency modeling
             use_center = False
@@ -981,6 +1018,7 @@ def main():
         lie = lie_label.lower()
 
         if st.button("Suggest Shots ✅"):
+            with st.spinner("Crunching the numbers..."):
             # Decide raw target (pin vs center of green)
             raw_target = target_pin
             using_center = False
@@ -1019,7 +1057,26 @@ def main():
             else:
                 st.caption(f"Using manual strategy selection: **{strategy_label}**")
 
-            st.markdown(f"### Adjusted Target (plays as): **{final_target_biased:.1f} yds**")
+            st.markdown(
+    f"""
+    <div style="
+        border-radius: 0.9rem;
+        padding: 0.9rem 1.1rem;
+        margin-top: 0.75rem;
+        margin-bottom: 0.35rem;
+        background: radial-gradient(circle at top left, rgba(34,197,94,0.12), rgba(15,23,42,0.9));
+        border: 1px solid rgba(34,197,94,0.45);
+    ">
+        <div style="font-size: 0.8rem; text-transform: uppercase; opacity: 0.8; letter-spacing: 0.14em;">
+            Adjusted Target · plays as
+        </div>
+        <div style="font-size: 1.7rem; font-weight: 650; margin-top: 0.1rem;">
+            {final_target_biased:.1f} yds
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+            )
 
             summary = build_situation_summary(
                 lie_label,
@@ -1218,10 +1275,11 @@ def main():
     with tab_info:
         st.subheader("How Golf Caddy Works")
         st.markdown(
-            "Golf Caddy evaluates your target distance, wind, lie, elevation, green firmness, "
-            "trouble around the green, your consistency, and your strategy preferences. "
-            "It then recommends shots based on both distance/risk logic and strokes gained calculations."
-        )
+            "Golf Caddy is a decision engine that blends tour-style course management, "
+    "strokes gained modeling, and your personal tendencies to suggest smarter shots "
+    "in real time on the course."
+    )
+    st.divider()
 
         st.markdown("### Key Concepts")
 
