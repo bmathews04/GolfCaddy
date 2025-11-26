@@ -120,6 +120,40 @@ st.sidebar.caption(
     "then **Range** and **Combine** tabs on the practice tee to dial in your game."
 )
 
+# ---- Strokes-Gained Baseline (Handicap Profile) ---- #
+if "sg_profile" not in st.session_state:
+    st.session_state.sg_profile = "Tour / Scratch"
+
+def scoring_profile_to_factor(label: str) -> float:
+    lab = (label or "").lower()
+    if "tour" in lab and "scratch" in lab:
+        return 1.0           # Tour / scratch
+    if "5–9" in lab or "5-9" in lab:
+        return 1.08          # Slightly higher expected strokes
+    if "10–14" in lab or "10-14" in lab:
+        return 1.15
+    if "15+" in lab:
+        return 1.22
+    return 1.0
+
+sg_profile_label = st.sidebar.selectbox(
+    "Strokes-Gained Baseline",
+    ["Tour / Scratch", "5–9 Handicap", "10–14 Handicap", "15+ Handicap"],
+    index=["Tour / Scratch", "5–9 Handicap", "10–14 Handicap", "15+ Handicap"].index(
+        st.session_state.sg_profile
+    ),
+    help="Choose who you want SG to be relative to: tour-level or your handicap band.",
+)
+st.session_state.sg_profile = sg_profile_label
+sg_profile_factor = scoring_profile_to_factor(sg_profile_label)
+
+st.sidebar.markdown("---")
+st.sidebar.caption(
+    "Quick tip: Use Quick mode on-course, then Range & Combine off-course "
+    "to train your distance control and SG over time."
+)
+
+
 # Precompute bag for current driver speed
 all_shots_base, scoring_shots, full_bag = build_all_candidate_shots(driver_speed)
 
@@ -487,6 +521,7 @@ with tab_caddy:
                     green_width=green_width,
                     n_sim=DEFAULT_N_SIM,
                     top_n=5,
+                    sg_profile_factor=sg_profile_factor,
                 )
 
                 if not ranked:
@@ -745,6 +780,7 @@ with tab_combine:
                 green_firmness_label="Medium",
                 n_sim=500,
                 carry_search_window=10.0,
+                sg_profile_factor=sg_profile_factor,
             )
 
             if not best_cfg:
@@ -781,6 +817,7 @@ with tab_combine:
                     green_width=0.0,
                     n_sim=400,
                     top_n=15,
+                    sg_profile_factor=sg_profile_factor,
                 )
 
                 if ranked_for_chart:
