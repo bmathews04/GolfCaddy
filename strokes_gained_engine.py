@@ -3,7 +3,9 @@ from typing import List, Dict, Tuple
 
 import numpy as np
 
-# -------------------- CONSTANTS -------------------- #
+# ============================================================
+# CONSTANTS & BASE DATA
+# ============================================================
 
 BASELINE_DRIVER_SPEED = 100.0  # mph
 
@@ -33,7 +35,7 @@ FULL_BAG_BASE: List[Tuple[str, float, float, int, float, float]] = [
     ("LW", 75, 34.0, 10500, 75, 81),
 ]
 
-# Shot-type multipliers
+# Shot-type multipliers (for scoring wedges)
 SHOT_MULTIPLIERS = {
     "Full": 1.00,
     "Choke-Down": 0.94,
@@ -81,14 +83,14 @@ STRATEGY_AGGRESSIVE = "Aggressive"
 DEFAULT_N_SIM = 800
 
 
-# -------------------- BASIC SCALING -------------------- #
+# ============================================================
+# BASIC SCALING & PUBLIC ADJUST FUNCTIONS
+# ============================================================
 
 def _scale_value(base_value: float, driver_speed_mph: float) -> float:
     """Scale a baseline value linearly with driver speed."""
     return base_value * (driver_speed_mph / BASELINE_DRIVER_SPEED)
 
-
-# -------------------- PUBLIC WIND / LIE / ELEVATION -------------------- #
 
 def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> float:
     """
@@ -155,14 +157,16 @@ def apply_lie(target: float, lie_label: str) -> float:
     return target * mult
 
 
-# -------------------- DISPERSION MODEL -------------------- #
+# ============================================================
+# DISPERSION MODEL
+# ============================================================
 
 def get_dispersion_sigma(category: str) -> float:
     """
     Return 1D distance dispersion (std dev in yards) for a given category.
     This is a simple, tour-informed but not exact model.
     """
-    cat = category.lower()
+    cat = (category or "").lower()
     if cat == "scoring_wedge":
         return 5.0
     if cat == "short_iron":
@@ -184,9 +188,11 @@ def _club_category(club: str) -> str:
     return "long"
 
 
-# -------------------- BAG & SHOT GENERATION -------------------- #
+# ============================================================
+# BAG & SHOT GENERATION
+# ============================================================
 
-def _build_full_bag(driver_speed_mph: float) -> List[Dict]:
+def _build_full_bag(driver_speed_mph: float):
     """
     Full bag distances for given driver speed.
     Returns a list of dicts with keys:
@@ -207,17 +213,16 @@ def _build_full_bag(driver_speed_mph: float) -> List[Dict]:
     return out
 
 
-def _build_scoring_shots(driver_speed_mph: float) -> List[Dict]:
+def _build_scoring_shots(driver_speed_mph: float):
     """
     All scoring shots (PW–LW + shot types) for given driver speed.
-    Returns list of dicts with: club, shot_type, trajectory, carry, total.
+    Returns list of dicts with: club, shot_type, trajectory, carry, total, category.
     """
     shots = []
     for club, shot_type, traj in SCORING_DEFS:
         full_carry = _scale_value(FULL_WEDGE_CARRIES[club], driver_speed_mph)
         carry = full_carry * SHOT_MULTIPLIERS[shot_type]
-        # For scoring shots, assume total is roughly same as carry (high, soft)
-        total = carry
+        total = carry  # high, soft scoring shots ≈ carry
         shots.append(
             {
                 "club": club,
@@ -243,10 +248,7 @@ def build_all_candidate_shots(driver_speed_mph: float):
     full_bag = _build_full_bag(driver_speed_mph)
     scoring_shots = _build_scoring_shots(driver_speed_mph)
 
-    # Build candidates:
-    #  - All full-swing clubs from full_bag
-    #  - All scoring shots (partials, etc.)
-    all_shots: List[Dict] = []
+    all_shots = []
 
     # Full-swing clubs (treat as "Full" shot type)
     for row in full_bag:
@@ -263,16 +265,17 @@ def build_all_candidate_shots(driver_speed_mph: float):
             }
         )
 
-    # Add scoring wedges (these add partial swings for PW/GW/SW/LW)
+    # Add scoring wedges (partials)
     all_shots.extend(scoring_shots)
 
     return all_shots, scoring_shots, full_bag
 
 
-# -------------------- STROKES GAINED CORE -------------------- #
+# ============================================================
+# STROKES-GAINED CORE
+# ============================================================
 
 # Very simple distance -> expected strokes mapping (approximate).
-# This is not a perfect PGA Tour table, but reasonable and smooth.
 _DISTANCE_STROKES_TABLE = [
     (0.0, 1.00),
     (3.0, 1.10),
@@ -341,7 +344,7 @@ def _simulate_candidate_sg(
     start_distance_yards: float,
     skill_factor: float,
     n_sim: int,
-) -> Tuple[float, float]:
+):
     """
     Monte Carlo strokes-gained estimate for a single candidate shot.
 
@@ -361,7 +364,7 @@ def _simulate_candidate_sg(
     # Distance remaining is abs(error)
     remaining = np.abs(errors)
 
-    # Base strokes after shot (1 stroke to hit, plus expected strokes from remaining)
+    # Base strokes after shot (1 to hit + expected from remaining distance)
     strokes_from_remaining = np.array(
         [_interp_expected_strokes(d) for d in remaining]
     )
@@ -373,13 +376,11 @@ def _simulate_candidate_sg(
     strat_mult = _strategy_penalty_multiplier(strategy_label)
 
     if short_severity > 0.0:
-        # Consider "bad short" if > 5 yards short of target
-        short_mask = errors < -5.0
+        short_mask = errors < -5.0  # bad short if 5+ yds short
         strokes_samples[short_mask] += short_severity * strat_mult
 
     if long_severity > 0.0:
-        # Consider "bad long" if > 5 yards long of target
-        long_mask = errors > 5.0
+        long_mask = errors > 5.0   # bad long if 5+ yds long
         strokes_samples[long_mask] += long_severity * strat_mult
 
     expected_after = float(strokes_samples.mean())
@@ -387,7 +388,7 @@ def _simulate_candidate_sg(
     # Baseline from current distance (before this shot)
     baseline_from_here = _interp_expected_strokes(start_distance_yards)
 
-    # Strokes gained = baseline - expected actual
+    # SG = baseline - expected actual
     sg = baseline_from_here - expected_after
     return expected_after, sg
 
@@ -412,14 +413,13 @@ def recommend_shots_with_sg(
     """
     Rank candidate shots by strokes gained, returning up to top_n.
 
-    Many of the arguments (green_firmness_label, front/back, lateral) are
-    accepted for future expansion, but the current model focuses on
-    along-the-line distance + simple short/long trouble.
+    Many arguments (green_firmness_label, front/back, lateral) are accepted
+    for future expansion, but the current model focuses on along-the-line
+    distance + simple short/long trouble.
     """
     # Filter candidates to reasonable window around target to keep noise down
     filtered: List[Dict] = []
     for c in candidates:
-        # basic sanity: ignore very short chips or huge overclubs for now
         if c["total"] < 0.5 * target_total:
             continue
         if c["total"] > 1.5 * target_total:
@@ -429,6 +429,7 @@ def recommend_shots_with_sg(
     evaluated: List[Dict] = []
     for c in filtered:
         diff = c["total"] - target_total
+
         expected_after, sg = _simulate_candidate_sg(
             candidate=c,
             target_total=target_total,
@@ -440,10 +441,10 @@ def recommend_shots_with_sg(
             n_sim=n_sim,
         )
 
-        # Legacy "score": tighter to target is better, punish large misses
+        # Legacy target proximity score (for tie-breaking)
         legacy_score = -abs(diff) - 0.2 * get_dispersion_sigma(c["category"])
 
-        # Reason string for UI
+        # Plain-language reason for the UI
         reason_parts = []
         if abs(diff) <= 5:
             reason_parts.append("Distances match the plays-like yardage closely.")
@@ -483,7 +484,6 @@ def recommend_shots_with_sg(
             }
         )
 
-    # Sort primarily by SG descending, then by legacy score
+    # Sort by SG first, then by legacy proximity score
     evaluated.sort(key=lambda x: (x["sg"], x["score"]), reverse=True)
-
     return evaluated[:top_n]
