@@ -45,7 +45,6 @@ SHOT_MULTIPLIERS = {
 }
 
 # More detailed wedge profiles (carry multiplier, extra spin factor, dispersion tweak)
-# These are heuristic but “feel” like good tour-informed starting points.
 WEDGE_PROFILES: Dict[Tuple[str, str], Dict[str, float]] = {
     ("PW", "Full"): {"carry_mult": 1.00, "spin_mult": 1.0, "sigma_mult": 1.0},
     ("PW", "Choke-Down"): {"carry_mult": 0.94, "spin_mult": 1.05, "sigma_mult": 0.95},
@@ -110,8 +109,7 @@ STRATEGY_AGGRESSIVE = "Aggressive"
 # Default number of Monte Carlo simulations per candidate
 DEFAULT_N_SIM = 800
 
-# Launch “windows” per club (approx tour-ish ranges)
-# Not currently used by app.py, but available for future Range/Coach modes.
+# Launch “windows” per club (approx ranges)
 LAUNCH_WINDOWS = {
     "Driver": {"launch_deg": (10, 15), "spin_rpm": (2000, 2800)},
     "3W": {"launch_deg": (11, 16), "spin_rpm": (2600, 3300)},
@@ -212,7 +210,6 @@ def apply_lie(target: float, lie_label: str) -> float:
 def get_dispersion_sigma(category: str) -> float:
     """
     Return 1D distance dispersion (std dev in yards) for a given category.
-    This is a simple, tour-informed but not exact model.
     """
     cat = (category or "").lower()
     if cat == "scoring_wedge":
@@ -290,8 +287,6 @@ def _estimate_roll_from_spin(
 def _build_full_bag(driver_speed_mph: float, green_firmness_label: str = "Medium"):
     """
     Full bag distances for given driver speed with simple carry/roll model.
-    Returns a list of dicts with:
-      Club, Ball Speed (mph), Launch (°), Spin (rpm), Carry (yds), Total (yds)
     """
     out = []
     for club, bs, launch, spin, carry_base, total_base in FULL_BAG_BASE:
@@ -339,7 +334,7 @@ def _build_scoring_shots(driver_speed_mph: float):
         else:
             carry = base_full_carry * SHOT_MULTIPLIERS.get(shot_type, 1.0)
 
-        # For now assume total ≈ carry for scoring wedges (they stop quickly).
+        # For now assume total ≈ carry for scoring wedges.
         total = carry
 
         shots.append(
@@ -364,8 +359,6 @@ def build_all_candidate_shots(driver_speed_mph: float):
       scoring_shots: list[dict] of wedge/scoring shots (for table)
       full_bag:      list[dict] of full-bag yardages (for tables/range)
     """
-    # Use "Medium" as baseline firmness for bag modeling – the app passes
-    # firmness later into SG sims for more detailed behavior.
     full_bag = _build_full_bag(driver_speed_mph, green_firmness_label="Medium")
     scoring_shots = _build_scoring_shots(driver_speed_mph)
 
@@ -396,8 +389,6 @@ def build_all_candidate_shots(driver_speed_mph: float):
 # STROKES-GAINED TABLES (BY LIE TYPE)
 # ============================================================
 
-# Approximate “tour-ish” baseline from ShotLink-style data,
-# but smoothed and simplified.
 _EXPECTED_STROKES_BY_LIE = {
     "fairway": [
         (0.0, 1.00),
@@ -461,27 +452,39 @@ _EXPECTED_STROKES_BY_LIE = {
 }
 
 
-def _interp_expected_strokes(distance_yards: float, lie_type: str) -> float:
-    """Linear interpolation over the distance-strokes table for a given lie."""
+def _interp_expected_strokes(
+    distance_yards: float,
+    lie_type: str,
+    profile_factor: float = 1.0,
+) -> float:
+    """
+    Linear interpolation over the distance-strokes table for a given lie,
+    then scaled by profile_factor to reflect different scoring baselines
+    (Tour vs mid-handicap vs high-handicap, etc.).
+    """
     d = max(0.0, float(distance_yards))
     lie = (lie_type or "fairway").lower()
     table = _EXPECTED_STROKES_BY_LIE.get(lie, _EXPECTED_STROKES_BY_LIE["fairway"])
 
     if d <= table[0][0]:
-        return table[0][1]
-    if d >= table[-1][0]:
-        return table[-1][1]
+        base = table[0][1]
+    elif d >= table[-1][0]:
+        base = table[-1][1]
+    else:
+        base = table[-1][1]
+        for i in range(len(table) - 1):
+            d0, s0 = table[i]
+            d1, s1 = table[i + 1]
+            if d0 <= d <= d1:
+                if d1 == d0:
+                    base = s0
+                else:
+                    t = (d - d0) / (d1 - d0)
+                    base = s0 + t * (s1 - s0)
+                break
 
-    for i in range(len(table) - 1):
-        d0, s0 = table[i]
-        d1, s1 = table[i + 1]
-        if d0 <= d <= d1:
-            if d1 == d0:
-                return s0
-            t = (d - d0) / (d1 - d0)
-            return s0 + t * (s1 - s0)
-
-    return table[-1][1]
+    # Scale by profile factor (e.g., 1.0 for tour, >1.0 for higher handicaps)
+    return base * max(0.8, profile_factor)
 
 
 def _strategy_penalty_multiplier(strategy_label: str) -> float:
@@ -521,6 +524,7 @@ def _simulate_candidate_sg(
     skill_factor: float,
     green_firmness_label: str,
     n_sim: int,
+    profile_factor: float = 1.0,
 ):
     """
     Monte Carlo strokes-gained estimate for a single candidate shot.
@@ -530,48 +534,38 @@ def _simulate_candidate_sg(
     """
     cat = candidate["category"]
     sigma_base = get_dispersion_sigma(cat)
-
-    # Skill factor: recreational > 1, highly consistent < 1
     sigma_eff = max(0.1, sigma_base * skill_factor)
 
-    # Mean error (positive = long, negative = short) in yards
     mu = candidate["total"] - target_total
 
-    # Sample shot outcomes in 1D (along line to target)
     errors = np.random.normal(loc=mu, scale=sigma_eff, size=n_sim)
-
-    # Distance remaining is abs(error)
     remaining = np.abs(errors)
 
-    # Assume outcome lie is fairway/green most of the time;
-    # for now we keep same lie as starting surface for expected strokes.
     outcome_lie = start_surface or "fairway"
 
-    # Base strokes after shot (1 stroke to hit, plus expected strokes from remaining)
     strokes_from_remaining = np.array(
-        [_interp_expected_strokes(d, outcome_lie) for d in remaining]
+        [_interp_expected_strokes(d, outcome_lie, profile_factor) for d in remaining]
     )
     strokes_samples = 1.0 + strokes_from_remaining
 
-    # Trouble penalties for big misses short/long
     short_severity = _trouble_severity(short_trouble_label)
     long_severity = _trouble_severity(long_trouble_label)
     strat_mult = _strategy_penalty_multiplier(strategy_label)
 
     if short_severity > 0.0:
-        short_mask = errors < -5.0  # bad short if 5+ yds short
+        short_mask = errors < -5.0
         strokes_samples[short_mask] += short_severity * strat_mult
 
     if long_severity > 0.0:
-        long_mask = errors > 5.0   # bad long if 5+ yds long
+        long_mask = errors > 5.0
         strokes_samples[long_mask] += long_severity * strat_mult
 
     expected_after = float(strokes_samples.mean())
 
-    # Baseline from current distance (before this shot)
-    baseline_from_here = _interp_expected_strokes(start_distance_yards, start_surface)
+    baseline_from_here = _interp_expected_strokes(
+        start_distance_yards, start_surface, profile_factor
+    )
 
-    # SG = baseline - expected actual
     sg = baseline_from_here - expected_after
     return expected_after, sg
 
@@ -596,15 +590,13 @@ def recommend_shots_with_sg(
     green_width: float,
     n_sim: int = DEFAULT_N_SIM,
     top_n: int = 10,
+    sg_profile_factor: float = 1.0,
 ) -> List[Dict]:
     """
     Rank candidate shots by strokes gained, returning up to top_n.
-
-    Arguments front/back/pin_lateral/green_width are accepted for future
-    expansion (2D dispersion / lateral trouble), but the current model
-    focuses on along-the-line distance + simple short/long trouble.
+    sg_profile_factor scales the expected-strokes tables so SG is relative
+    to your chosen scoring baseline (Tour vs mid/high handicap).
     """
-    # Filter candidates to reasonable window around target to keep noise down
     filtered: List[Dict] = []
     for c in candidates:
         if c["total"] < 0.5 * target_total:
@@ -628,12 +620,11 @@ def recommend_shots_with_sg(
             skill_factor=skill_factor,
             green_firmness_label=green_firmness_label,
             n_sim=n_sim,
+            profile_factor=sg_profile_factor,
         )
 
-        # Legacy target proximity score (for tie-breaking)
         legacy_score = -abs(diff) - 0.2 * get_dispersion_sigma(c["category"])
 
-        # Plain-language reason for the UI
         reason_parts = []
         if abs(diff) <= 5:
             reason_parts.append("Distances match the plays-like yardage closely.")
@@ -673,7 +664,6 @@ def recommend_shots_with_sg(
             }
         )
 
-    # Sort by SG first, then by legacy proximity score
     evaluated.sort(key=lambda x: (x["sg"], x["score"]), reverse=True)
     return evaluated[:top_n]
 
@@ -683,10 +673,7 @@ def recommend_shots_with_sg(
 # ============================================================
 
 def get_launch_window(club: str) -> Optional[Dict[str, Tuple[float, float]]]:
-    """
-    Return recommended launch & spin window for a given club, if defined.
-    Not currently used by app.py, but available for Range/Coach modes.
-    """
+    """Return recommended launch & spin window for a given club, if defined."""
     return LAUNCH_WINDOWS.get(club)
 
 
@@ -700,30 +687,16 @@ def compute_optimal_carry_for_target(
     green_firmness_label: str = "Medium",
     n_sim: int = 600,
     carry_search_window: float = 10.0,
+    sg_profile_factor: float = 1.0,
 ) -> Dict:
     """
     Prototype "perfect carry" helper for Combine-style or practice modes.
-
-    For each candidate shot, searches around its natural total distance
-    +/- carry_search_window and finds the aiming point (plays-to distance)
-    that yields the best strokes-gained profile relative to the pin.
-
-    Returns the best configuration:
-      {
-        "club": ...,
-        "shot_type": ...,
-        "best_target_total": ...,
-        "best_sg": ...,
-      }
     """
     best_cfg = None
 
     for c in candidates:
-        # We treat the candidate's natural total as central guess
         base_total = c["total"]
-        cat = c["category"]
 
-        # Explore a grid of offsets (aim slightly short/long)
         offsets = np.linspace(-carry_search_window, carry_search_window, 9)
 
         for off in offsets:
@@ -731,10 +704,8 @@ def compute_optimal_carry_for_target(
             if aim_total <= 0:
                 continue
 
-            # When we aim shorter/longer, "target_total" in SG is aim_total,
-            # but baseline SG is still referenced to pin distance.
             target_total_for_sg = aim_total
-            start_distance = aim_total  # plays-like distance of the strike
+            start_distance = aim_total
 
             expected_after, sg = _simulate_candidate_sg(
                 candidate=c,
@@ -747,10 +718,9 @@ def compute_optimal_carry_for_target(
                 skill_factor=skill_factor,
                 green_firmness_label=green_firmness_label,
                 n_sim=n_sim,
+                profile_factor=sg_profile_factor,
             )
 
-            # We care about how good this is relative to the pin distance
-            # as well, but for now we rank purely by SG from this position.
             cfg = {
                 "club": c["club"],
                 "shot_type": c["shot_type"],
