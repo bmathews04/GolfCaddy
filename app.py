@@ -174,8 +174,10 @@ tab_caddy, tab_range, tab_yardages, tab_combine, tab_info = st.tabs(
 
 with tab_caddy:
     if tournament_mode:
-        st.subheader("Tournament Mode: Raw Yardages Only")
+        # ---------- TOURNAMENT MODE: MINIMAL UI ---------- #
+        st.subheader("Tournament Mode")
 
+        # Pin input + big display
         col_tm1, col_tm2 = st.columns([2, 1])
         with col_tm1:
             pin_yardage = st.number_input(
@@ -187,20 +189,28 @@ with tab_caddy:
                 help="Measured distance from your rangefinder or GPS.",
             )
         with col_tm2:
-            st.markdown("**Tournament Note**")
-            st.caption(
-                "You may use this screen as a digital yardage book during play. "
-                "No plays-like recommendations or calculations are performed."
+            st.markdown("")
+            st.markdown("")
+            st.markdown(
+                f"<div style='text-align:right; font-size:22px;'>"
+                f"<b>Pin: {pin_yardage:.0f} yds</b>"
+                f"</div>",
+                unsafe_allow_html=True,
             )
 
-        # Raw full-bag yardages with dispersion column
-        st.markdown("### Raw Full-Bag Yardages")
+        st.caption(
+            "Tournament Mode behaves like a digital yardage book: "
+            "raw distances only, no plays-like math, no club recommendations, "
+            "and no strokes-gained calculations."
+        )
 
+        # ---- Minimal Full-Bag Table ---- #
         df_full = pd.DataFrame(full_bag)
         df_full["Ball Speed (mph)"] = df_full["Ball Speed (mph)"].round(1)
         df_full["Carry (yds)"] = df_full["Carry (yds)"].round(1)
         df_full["Total (yds)"] = df_full["Total (yds)"].round(1)
 
+        # Add dispersion estimate per club
         dispersion_list = []
         for _, row in df_full.iterrows():
             club = row["Club"]
@@ -215,38 +225,46 @@ with tab_caddy:
             dispersion_list.append(sigma)
 
         df_full["Dispersion (±yds)"] = dispersion_list
-        df_full = df_full[
-            [
-                "Club",
-                "Carry (yds)",
-                "Total (yds)",
-                "Dispersion (±yds)",
-                "Ball Speed (mph)",
-                "Launch (°)",
-                "Spin (rpm)",
-            ]
-        ]
-        df_full = df_full.reset_index(drop=True)
-        st.dataframe(df_full, use_container_width=True)
 
-        # Raw scoring wedge / partial shot table
-        st.markdown("### Raw Scoring Shot Yardages")
+        # Minimal view
+        df_basic = df_full[
+            ["Club", "Carry (yds)", "Total (yds)", "Dispersion (±yds)"]
+        ].reset_index(drop=True)
 
-        df_score = pd.DataFrame(scoring_shots)
-        df_score = df_score[["carry", "club", "shot_type", "trajectory"]]
-        df_score.columns = ["Carry (yds)", "Club", "Shot Type", "Trajectory"]
-        df_score = df_score.sort_values("Carry (yds)", ascending=False).reset_index(
-            drop=True
-        )
-        st.dataframe(df_score, use_container_width=True)
+        st.markdown("### Raw Full-Bag Yardages")
+        st.dataframe(df_basic, use_container_width=True)
+
+        # Optional advanced numbers
+        with st.expander("Show advanced ball data (ball speed, launch, spin)"):
+            df_adv = df_full[
+                [
+                    "Club",
+                    "Ball Speed (mph)",
+                    "Launch (°)",
+                    "Spin (rpm)",
+                    "Carry (yds)",
+                    "Total (yds)",
+                    "Dispersion (±yds)",
+                ]
+            ].reset_index(drop=True)
+            st.dataframe(df_adv, use_container_width=True)
+
+        # Optional scoring wedge table
+        with st.expander("Show scoring wedge / partial shot yardages"):
+            df_score = pd.DataFrame(scoring_shots)
+            df_score = df_score[["carry", "club", "shot_type", "trajectory"]]
+            df_score.columns = ["Carry (yds)", "Club", "Shot Type", "Trajectory"]
+            df_score = df_score.sort_values("Carry (yds)", ascending=False).reset_index(
+                drop=True
+            )
+            st.dataframe(df_score, use_container_width=True)
 
         st.info(
-            "In Tournament Mode, Golf Caddy acts like a digital yardage book. "
-            "No plays-like calculations, strategy suggestions, or club recommendations are used."
+            "Use this screen during events where only distance information is allowed. "
+            "All decision logic (plays-like, strategy, strokes gained) is disabled."
         )
 
     else:
-        st.subheader("On-Course Caddy Mode")
 
         # Mode selector: Quick vs Advanced
         mode = st.radio(
