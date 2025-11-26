@@ -1286,7 +1286,7 @@ def main():
             "strokes gained modeling, and your personal tendencies to suggest smarter shots "
             "in real time on the course."
             )
-            st.divider()
+        st.divider()
 
         st.markdown("### Key Concepts")
 
