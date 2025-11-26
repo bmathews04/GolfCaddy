@@ -321,6 +321,15 @@ def main():
             df_full = df_full.reset_index(drop=True)
             st.dataframe(df_full, use_container_width=True)
 
+        # 🔹 NEW: Raw Scoring Shot Yardage Table
+            st.markdown("### Raw Scoring Shot Yardages")
+
+            df_score = pd.DataFrame(scoring_shots)
+            df_score = df_score[["carry", "club", "shot_type", "trajectory"]]
+            df_score.columns = ["Carry (yds)", "Club", "Shot Type", "Trajectory"]
+            df_score = df_score.sort_values("Carry (yds)", ascending=False).reset_index(drop=True)
+            st.dataframe(df_score, use_container_width=True)
+
             st.info(
                 "In Tournament Mode, Golf Caddy acts like a digital yardage book. "
                 "No plays-like calculations, strategy suggestions, or club recommendations are used."
