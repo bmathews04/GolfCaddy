@@ -408,7 +408,7 @@ with tab_caddy:
 
                 st.markdown("**Trouble & Green Firmness**")
                 tcol1, tcol2, tcol3 = st.columns(3)
-                    with tcol1:
+            with tcol1:
                 trouble_short_label = st.selectbox(
                     "Trouble Short?",
                     ["None", "Mild", "Severe"],
