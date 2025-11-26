@@ -1274,6 +1274,9 @@ def main():
         df_full["Ball Speed (mph)"] = df_full["Ball Speed (mph)"].round(1)
         df_full["Carry (yds)"] = df_full["Carry (yds)"].round(1)
         df_full["Total (yds)"] = df_full["Total (yds)"].round(1)
+        df_full = df_full[
+        ["Club", "Carry (yds)", "Total (yds)", "Ball Speed (mph)", "Launch (°)", "Spin (rpm)"]
+        ]
         df_full = df_full.sort_values("Carry (yds)", ascending=False)
         df_full = df_full.reset_index(drop=True)
         st.dataframe(df_full, use_container_width=True)
