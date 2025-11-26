@@ -126,6 +126,12 @@ LAUNCH_WINDOWS = {
     "LW": {"launch_deg": (30, 38), "spin_rpm": (9000, 11000)},
 }
 
+FAIRWAY_WIDTHS = {
+    "narrow": 25.0,
+    "medium": 35.0,
+    "wide": 45.0,
+}
+
 
 # ============================================================
 # BASIC SCALING & PUBLIC ADJUST FUNCTIONS
@@ -337,7 +343,7 @@ def _build_scoring_shots(driver_speed_mph: float):
         else:
             carry = base_full_carry * SHOT_MULTIPLIERS.get(shot_type, 1.0)
 
-        total = carry
+        total = carry  # wedges land & stop for this engine
 
         shots.append(
             {
@@ -366,8 +372,14 @@ def build_all_candidate_shots(driver_speed_mph: float):
 
     all_shots: List[Dict] = []
 
+    # Use full-bag model for Driver–9i, but NOT for PW/GW/SW/LW
+    wedge_clubs = {"PW", "GW", "SW", "LW"}
+
     for row in full_bag:
         club = row["Club"]
+        if club in wedge_clubs:
+            continue  # wedges handled by scoring_shots model
+
         cat = _club_category(club)
         all_shots.append(
             {
@@ -380,6 +392,7 @@ def build_all_candidate_shots(driver_speed_mph: float):
             }
         )
 
+    # Add wedge shots (Full + partials) from wedge model
     all_shots.extend(scoring_shots)
     return all_shots, scoring_shots, full_bag
 
@@ -504,6 +517,15 @@ def _trouble_severity(label: str) -> float:
     return 0.0
 
 
+def _normal_cdf(x: float) -> float:
+    """Standard normal CDF using error function."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _fairway_width_yards(label: str) -> float:
+    return FAIRWAY_WIDTHS.get((label or "medium").lower(), 35.0)
+
+
 # ============================================================
 # SG SIMULATION (2D DISPERSION + HAZARDS)
 # ============================================================
@@ -602,7 +624,7 @@ def _simulate_candidate_sg(
 
 
 # ============================================================
-# PUBLIC RECOMMENDER
+# PUBLIC RECOMMENDER (APP CADDY MODE)
 # ============================================================
 
 def recommend_shots_with_sg(
@@ -711,7 +733,7 @@ def recommend_shots_with_sg(
 
 
 # ============================================================
-# EXTRA HELPERS FOR FUTURE MODES
+# EXTRA HELPERS FOR OTHER MODES
 # ============================================================
 
 def get_launch_window(club: str) -> Optional[Dict[str, Tuple[float, float]]]:
@@ -780,3 +802,265 @@ def compute_optimal_carry_for_target(
                 best_cfg = cfg
 
     return best_cfg or {}
+
+
+# ============================================================
+# PAR STRATEGY ENGINE (PAR 3 / 4 / 5)
+# ============================================================
+
+def _simulate_green_hit_stats(
+    candidate: Dict,
+    target_total: float,
+    skill_factor: float,
+    green_width: float,
+    n_sim: int = 800,
+) -> Dict[str, float]:
+    """
+    Light-weight simulator to estimate how often a shot
+    finishes near the hole or on the green, using 2D dispersion.
+    """
+    cat = candidate["category"]
+    sigma_depth = get_dispersion_sigma(cat) * skill_factor
+    sigma_lat = get_lateral_sigma(cat) * skill_factor
+    mu_depth = candidate["total"] - target_total
+    mu_lat = 0.0
+
+    depth_errors = np.random.normal(mu_depth, sigma_depth, n_sim)
+    lat_errors = np.random.normal(mu_lat, sigma_lat, n_sim)
+    radial = np.sqrt(depth_errors**2 + lat_errors**2)
+
+    within_5 = (radial <= 5.0).mean()
+    within_10 = (radial <= 10.0).mean()
+
+    if green_width > 0:
+        half_w = green_width / 2.0
+        on_green = (
+            (np.abs(depth_errors) <= 5.0)
+            & (np.abs(lat_errors) <= half_w)
+        ).mean()
+    else:
+        on_green = 0.0
+
+    return {
+        "p_within_5": float(within_5),
+        "p_within_10": float(within_10),
+        "p_on_green": float(on_green),
+        "avg_depth": float(depth_errors.mean()),
+        "avg_lat": float(lat_errors.mean()),
+    }
+
+
+def par3_strategy(
+    hole_yards: float,
+    candidates: List[Dict],
+    skill_factor: float,
+    green_width: float,
+    short_trouble_label: str = "None",
+    long_trouble_label: str = "None",
+    left_trouble_label: str = "None",
+    right_trouble_label: str = "None",
+    strategy_label: str = STRATEGY_BALANCED,
+    sg_profile_factor: float = 1.0,
+    n_sim: int = DEFAULT_N_SIM,
+) -> Dict:
+    """
+    Recommend approach strategy for a Par 3 from the tee.
+    Uses the same SG engine as Caddy mode, but assumes start_surface=fairway.
+    """
+    ranked = recommend_shots_with_sg(
+        target_total=hole_yards,
+        candidates=candidates,
+        short_trouble_label=short_trouble_label,
+        long_trouble_label=long_trouble_label,
+        left_trouble_label=left_trouble_label,
+        right_trouble_label=right_trouble_label,
+        green_firmness_label="Medium",
+        strategy_label=strategy_label,
+        start_distance_yards=hole_yards,
+        start_surface="fairway",
+        front_yards=0.0,
+        back_yards=0.0,
+        skill_factor=skill_factor,
+        pin_lateral_offset=0.0,
+        green_width=green_width,
+        n_sim=n_sim,
+        top_n=5,
+        sg_profile_factor=sg_profile_factor,
+    )
+
+    if not ranked:
+        return {"best": None, "alternatives": [], "hole_yards": hole_yards}
+
+    best = ranked[0]
+    stats = _simulate_green_hit_stats(
+        best, target_total=hole_yards, skill_factor=skill_factor,
+        green_width=green_width, n_sim=600
+    )
+
+    best_out = dict(best)
+    best_out.update(stats)
+
+    return {
+        "best": best_out,
+        "alternatives": ranked,
+        "hole_yards": hole_yards,
+    }
+
+
+def par4_strategy(
+    hole_yards: float,
+    full_bag: List[Dict],
+    skill_factor: float,
+    fairway_width_label: str,
+    tee_left_trouble_label: str = "None",
+    tee_right_trouble_label: str = "None",
+    sg_profile_factor: float = 1.0,
+) -> Dict:
+    """
+    Simple tee-club strategy for Par 4.
+    Chooses between Driver, 3W, 3H, 4i, 5i based on expected score.
+    """
+    fairway_width = _fairway_width_yards(fairway_width_label)
+    tee_clubs = {"Driver", "3W", "3H", "4i", "5i"}
+    options = []
+
+    for row in full_bag:
+        club = row["Club"]
+        if club not in tee_clubs:
+            continue
+
+        cat = _club_category(club)
+        total = row["Total (yds)"]
+        remaining = max(30.0, hole_yards - total)
+
+        # Base expectation: tee shot + expected from fairway at remaining distance
+        exp_after = _interp_expected_strokes(remaining, "fairway", sg_profile_factor)
+        base_score = 1.0 + exp_after
+
+        # Lateral miss probability
+        sigma_lat = get_lateral_sigma(cat) * skill_factor
+        if sigma_lat <= 0:
+            miss_prob = 0.0
+        else:
+            thresh = fairway_width / 2.0
+            miss_prob = 2.0 * (1.0 - _normal_cdf(thresh / sigma_lat))
+            miss_prob = min(max(miss_prob, 0.0), 1.0)
+
+        left_sev = _trouble_severity(tee_left_trouble_label)
+        right_sev = _trouble_severity(tee_right_trouble_label)
+        sev_total = left_sev + right_sev
+
+        strat_mult = _strategy_penalty_multiplier(STRATEGY_BALANCED)
+
+        penalty = miss_prob * sev_total * strat_mult
+
+        expected_score = base_score + penalty
+
+        options.append(
+            {
+                "tee_club": club,
+                "category": cat,
+                "avg_total": total,
+                "remaining_yards": remaining,
+                "expected_score": expected_score,
+                "fairway_width": fairway_width,
+                "miss_prob": miss_prob,
+                "left_trouble": tee_left_trouble_label,
+                "right_trouble": tee_right_trouble_label,
+            }
+        )
+
+    if not options:
+        return {"best": None, "options": [], "hole_yards": hole_yards}
+
+    options.sort(key=lambda o: o["expected_score"])
+    best = options[0]
+
+    # Reference baseline: generic expectation from tee at this length
+    baseline_from_tee = _interp_expected_strokes(hole_yards, "fairway", sg_profile_factor)
+    best_sg_vs_baseline = baseline_from_tee - best["expected_score"]
+
+    best_out = dict(best)
+    best_out["sg_vs_baseline"] = best_sg_vs_baseline
+
+    return {
+        "best": best_out,
+        "options": options,
+        "hole_yards": hole_yards,
+    }
+
+
+def par5_strategy(
+    hole_yards: float,
+    full_bag: List[Dict],
+    skill_factor: float,
+    fairway_width_label: str,
+    tee_left_trouble_label: str = "None",
+    tee_right_trouble_label: str = "None",
+    sg_profile_factor: float = 1.0,
+) -> Dict:
+    """
+    Simple Par 5 strategy:
+      1) Choose best tee club via par4_strategy logic.
+      2) From that remaining distance, compare:
+         - Go-for-it in two
+         - Lay up to a preferred wedge distance (search over 70–130 yds).
+    """
+    par4_res = par4_strategy(
+        hole_yards=hole_yards,
+        full_bag=full_bag,
+        skill_factor=skill_factor,
+        fairway_width_label=fairway_width_label,
+        tee_left_trouble_label=tee_left_trouble_label,
+        tee_right_trouble_label=tee_right_trouble_label,
+        sg_profile_factor=sg_profile_factor,
+    )
+
+    best_tee = par4_res.get("best")
+    if not best_tee:
+        return {
+            "best_tee": None,
+            "strategy": None,
+            "hole_yards": hole_yards,
+            "go_for_it_score": None,
+            "layup_score": None,
+        }
+
+    remaining_after_tee = best_tee["remaining_yards"]
+
+    # Three-shot (layup) route: lay up to ~80–110 yds and pitch on
+    layup_targets = [70.0, 80.0, 90.0, 100.0, 110.0, 120.0]
+
+    layup_best_score = None
+    layup_best_target = None
+    for L in layup_targets:
+        # Tee (1) + layup (1) + expected from fairway at L
+        exp_from_L = _interp_expected_strokes(L, "fairway", sg_profile_factor)
+        score = 1.0 + 1.0 + exp_from_L
+        if layup_best_score is None or score < layup_best_score:
+            layup_best_score = score
+            layup_best_target = L
+
+    # Two-shot (go for it) route: from remaining_after_tee to green region
+    # Treat as "rough" lie because most go-for-it second shots are higher risk.
+    go_for_it_score = 1.0 + _interp_expected_strokes(
+        remaining_after_tee, "rough", sg_profile_factor
+    )
+
+    if layup_best_score is None or go_for_it_score < layup_best_score:
+        strategy = "Go for it (second shot at green)"
+        chosen_score = go_for_it_score
+    else:
+        strategy = "Lay up, then wedge"
+        chosen_score = layup_best_score
+
+    return {
+        "best_tee": best_tee,
+        "strategy": strategy,
+        "hole_yards": hole_yards,
+        "remaining_after_tee": remaining_after_tee,
+        "layup_target": layup_best_target,
+        "layup_score": layup_best_score,
+        "go_for_it_score": go_for_it_score,
+        "expected_score": chosen_score,
+    }
