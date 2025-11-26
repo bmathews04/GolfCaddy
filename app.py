@@ -1283,10 +1283,10 @@ def main():
         st.subheader("How Golf Caddy Works")
         st.markdown(
             "Golf Caddy is a decision engine that blends tour-style course management, "
-    "strokes gained modeling, and your personal tendencies to suggest smarter shots "
-    "in real time on the course."
-    )
-    st.divider()
+            "strokes gained modeling, and your personal tendencies to suggest smarter shots "
+            "in real time on the course."
+            )
+            st.divider()
 
         st.markdown("### Key Concepts")
 
