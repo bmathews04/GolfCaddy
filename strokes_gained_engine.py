@@ -1,4 +1,5 @@
 import math
+import random
 
 # ------------------------------------------------------------
 # Constants & Baselines
@@ -133,6 +134,50 @@ def apply_lie(target: float, lie_label: str) -> float:
     else:
         mult = 1.00
     return target * mult
+
+
+def apply_temperature(target: float, temp_f: float, baseline_temp_f: float = 75.0) -> float:
+    """
+    Simple temperature model:
+      - Each 10°F colder than baseline reduces distance ~2.5 yards at 150y
+      - Scales linearly with distance.
+    """
+    if temp_f is None:
+        return target
+    delta = temp_f - baseline_temp_f  # negative if colder
+    # 2.5 yds per 10°F at 150y, scaled by target distance
+    adj = (delta / 10.0) * 2.5 * (target / 150.0)
+    return target + adj
+
+
+def calculate_plays_like_yardage(
+    raw_yards: float,
+    wind_dir: str,
+    wind_strength_label: str,
+    elevation_label: str,
+    lie_label: str,
+    tendency_label: str = "Neutral",
+    temp_f: float = 75.0,
+    baseline_temp_f: float = 75.0,
+) -> float:
+    """
+    Shared 'plays-like' calculator used in Tournament Prep and (optionally) elsewhere.
+    """
+    val = raw_yards
+    val = adjust_for_wind(val, wind_dir, wind_strength_label)
+    val = apply_elevation(val, elevation_label)
+    val = apply_lie(val, lie_label)
+    val = apply_temperature(val, temp_f, baseline_temp_f)
+
+    tendency_label = (tendency_label or "Neutral")
+    tendency_adj = 0.0
+    if tendency_label == "Usually Short":
+        tendency_adj = 3.0
+    elif tendency_label == "Usually Long":
+        tendency_adj = -3.0
+
+    val += tendency_adj
+    return val
 
 
 # ------------------------------------------------------------
@@ -630,4 +675,36 @@ def par5_strategy(
         "layup_score": layup_score,
         "layup_target": layup_target,
         "go_for_it_score": go_for_it_score,
+    }
+
+
+# ------------------------------------------------------------
+# Tournament Prep helpers
+# ------------------------------------------------------------
+
+def generate_random_scenario():
+    """
+    Random practice scenario for Tournament Prep Mode.
+    Returns dict with raw_yards, wind_dir, wind_strength, elevation, lie, temp_f, pin_depth, green_firmness.
+    """
+    raw_yards = random.randint(110, 220)
+    wind_dir = random.choice(["None", "Into", "Down", "Cross"])
+    wind_strength = random.choice(["None", "Light", "Medium", "Heavy"])
+    elevation = random.choice(
+        ["Flat", "Slight Uphill", "Moderate Uphill", "Slight Downhill", "Moderate Downhill"]
+    )
+    lie = random.choice(["Good", "Ok", "Bad"])
+    temp_f = random.choice([50, 55, 60, 65, 70, 75, 80, 85, 90])
+    pin_depth = random.choice(["Front", "Middle", "Back"])
+    green_firmness = random.choice(["Soft", "Medium", "Firm"])
+
+    return {
+        "raw_yards": raw_yards,
+        "wind_dir": wind_dir,
+        "wind_strength": wind_strength,
+        "elevation": elevation,
+        "lie": lie,
+        "temp_f": temp_f,
+        "pin_depth": pin_depth,
+        "green_firmness": green_firmness,
     }
