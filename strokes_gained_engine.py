@@ -7,6 +7,14 @@ import random
 
 BASELINE_DRIVER_SPEED = 100.0  # mph
 
+# ---- Environmental / physics constants ---- #
+BASELINE_TEMP_F = 75.0           # calibration temperature for your bag
+STANDARD_PRESSURE_PA = 101325.0  # sea level pressure
+REL_HUMIDITY_DEFAULT = 0.50      # 50% relative humidity
+R_DRY_AIR = 287.058              # J/(kg·K)
+R_WATER_VAPOR = 461.495          # J/(kg·K)
+
+
 # Full-swing wedge carries at 100 mph (center values)
 FULL_WEDGE_CARRIES = {
     "PW": 121,
@@ -138,43 +146,161 @@ def apply_lie(target, lie_label):
     return target * mult
 
 
-def _apply_temperature(target, temp_f, baseline_temp_f=75.0):
+def _f_to_k(temp_f: float) -> float:
+    """Convert Fahrenheit to Kelvin."""
+    return (temp_f - 32.0) * 5.0 / 9.0 + 273.15
+
+
+def _air_density(
+    temp_f: float,
+    pressure_pa: float = STANDARD_PRESSURE_PA,
+    rel_humidity: float = REL_HUMIDITY_DEFAULT,
+) -> float:
     """
-    Very simple temperature adjustment:
-    each 10°F colder than baseline reduces distance ~2.5 yds at 150y,
-    scaled by shot length.
+    Compute moist-air density using a simplified physical model.
+
+    Uses:
+      - Tetens formula for saturation vapor pressure (approximation)
+      - Ideal gas law for dry air + water vapor components
+
+    This is overkill for golf, but gives a tour-level feel.
+    """
+    # Convert temperature
+    t_c = (temp_f - 32.0) * 5.0 / 9.0
+    t_k = t_c + 273.15
+
+    # Saturation vapor pressure over water (Tetens formula), in Pa
+    # es(T) ≈ 6.112 * exp((17.67*T)/(T+243.5)) hPa  -> multiply by 100 for Pa
+    es_hpa = 6.112 * math.exp((17.67 * t_c) / (t_c + 243.5))
+    es_pa = es_hpa * 100.0
+
+    # Actual vapor pressure
+    e = rel_humidity * es_pa
+
+    # Partial pressure of dry air
+    p_dry = pressure_pa - e
+
+    # Density = ρ_dry + ρ_vapor
+    rho_dry = p_dry / (R_DRY_AIR * t_k)
+    rho_vapor = e / (R_WATER_VAPOR * t_k)
+
+    return rho_dry + rho_vapor
+
+
+def _environment_distance_scale(
+    temp_f: float,
+    baseline_temp_f: float = BASELINE_TEMP_F,
+    shot_length_yards: float = 150.0,
+) -> float:
+    """
+    Compute a *multiplicative distance scale* based on change in air density.
+
+    Rough idea:
+      - Distance is inversely related to sqrt(air density).
+      - Longer shots are a bit more sensitive than short shots.
     """
     if temp_f is None:
-        return target
-    delta = temp_f - baseline_temp_f  # negative = colder
-    adj = (delta / 10.0) * 2.5 * (target / 150.0)
-    return target + adj
+        return 1.0
+
+    # Air densities at baseline vs current
+    rho_base = _air_density(baseline_temp_f)
+    rho_cur = _air_density(temp_f)
+
+    # Idealized distance factor from density alone
+    # (less dense air -> ball flies farther -> factor > 1)
+    raw_factor = (rho_base / rho_cur) ** 0.5
+
+    # Scale sensitivity by shot length (wedge vs long iron vs driver)
+    length_factor = max(0.6, min(1.4, shot_length_yards / 150.0))
+
+    # Dial it down a bit so we don't get crazy changes
+    # Example: 40°F to 90°F might give ~3–5% change for a 7-iron
+    final_factor = 1.0 + (raw_factor - 1.0) * length_factor * 0.7
+
+    return final_factor
+
+
+def _apply_environment_plays_like(
+    target_yards: float,
+    temp_f: float,
+    baseline_temp_f: float = BASELINE_TEMP_F,
+) -> float:
+    """
+    Apply environmental (temperature/air density) adjustment to a *target yardage*.
+
+    Concept:
+      - Your bag is calibrated at baseline_temp_f (e.g., 75°F).
+      - On a hotter day, the ball flies farther, so the same raw yardage
+        'plays shorter' -> effective target distance is smaller.
+      - On a colder day, the opposite: the shot plays longer.
+
+    We do:
+      adjusted_target = raw_target / distance_scale
+    """
+    if temp_f is None:
+        return target_yards
+
+    scale = _environment_distance_scale(
+        temp_f=temp_f,
+        baseline_temp_f=baseline_temp_f,
+        shot_length_yards=target_yards,
+    )
+
+    # If scale > 1 (ball flies farther), target plays shorter: divide by scale.
+    return target_yards / scale
+
 
 
 def calculate_plays_like_yardage(
-    raw_yards,
-    wind_dir,
-    wind_strength_label,
-    elevation_label,
-    lie_label,
-    tendency_label="Neutral",
-    temp_f=75.0,
-    baseline_temp_f=75.0,
-):
-    """Shared plays-like calculator (used by Tournament Prep)."""
-    val = raw_yards
+    raw_yards: float,
+    wind_dir: str,
+    wind_strength_label: str,
+    elevation_label: str,
+    lie_label: str,
+    tendency_label: str = "Neutral",
+    temp_f: float = None,
+    baseline_temp_f: float = BASELINE_TEMP_F,
+) -> float:
+    """
+    Shared plays-like calculator (used by Caddy + Tournament Prep).
+
+    Steps:
+      1) Start from raw rangefinder yardage.
+      2) Adjust for wind (direction + strength).
+      3) Adjust for elevation.
+      4) Adjust for lie quality.
+      5) Adjust for player distance tendency (usually short/long).
+      6) Apply Level-3 environment model (air density via temperature).
+
+    NOTE:
+      - We assume your *bag yardages* are calibrated at baseline_temp_f
+        (e.g., 75°F). So temperature is modeled by changing the *effective
+        target*, not your stored yardages.
+    """
+    val = float(raw_yards)
+
+    # Wind / elevation / lie
     val = adjust_for_wind(val, wind_dir, wind_strength_label)
     val = apply_elevation(val, elevation_label)
     val = apply_lie(val, lie_label)
-    val = _apply_temperature(val, temp_f, baseline_temp_f)
 
-    tendency_label = tendency_label or "Neutral"
+    # Player tendency (distance bias)
+    tendency_label = (tendency_label or "Neutral").strip()
     if tendency_label == "Usually Short":
         val += 3.0
     elif tendency_label == "Usually Long":
         val -= 3.0
 
+    # Environment (air density / temperature)
+    if temp_f is not None:
+        val = _apply_environment_plays_like(
+            target_yards=val,
+            temp_f=temp_f,
+            baseline_temp_f=baseline_temp_f,
+        )
+
     return val
+
 
 
 # ============================================================
