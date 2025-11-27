@@ -644,12 +644,23 @@ def generate_random_scenario():
     Random practice scenario for Tournament Prep Mode.
     Returns dict with raw_yards, wind_dir, wind_strength, elevation,
     lie, temp_f, pin_depth, green_firmness.
+    Wind direction/strength are kept consistent:
+      - Either 'None' / 'None'
+      - Or (Into/Down/Cross) with (Light/Medium/Heavy)
     """
     raw_yards = random.randint(110, 220)
-    wind_dir = random.choice(["None", "Into", "Down", "Cross"])
-    wind_strength = random.choice(["None", "Light", "Medium", "Heavy"])
+
+    # ~30% of the time: truly calm
+    if random.random() < 0.3:
+        wind_dir = "None"
+        wind_strength = "None"
+    else:
+        wind_dir = random.choice(["Into", "Down", "Cross"])
+        wind_strength = random.choice(["Light", "Medium", "Heavy"])
+
     elevation = random.choice(
-        ["Flat", "Slight Uphill", "Moderate Uphill", "Slight Downhill", "Moderate Downhill"]
+        ["Flat", "Slight Uphill", "Moderate Uphill",
+         "Slight Downhill", "Moderate Downhill"]
     )
     lie = random.choice(["Good", "Ok", "Bad"])
     temp_f = random.choice([50, 55, 60, 65, 70, 75, 80, 85, 90])
@@ -666,3 +677,4 @@ def generate_random_scenario():
         "pin_depth": pin_depth,
         "green_firmness": green_firmness,
     }
+
