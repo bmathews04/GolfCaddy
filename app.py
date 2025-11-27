@@ -19,6 +19,8 @@ from strokes_gained_engine import (
     par3_strategy,
     par4_strategy,
     par5_strategy,
+    calculate_plays_like_yardage,
+    generate_random_scenario,
 )
 
 # ------------------------------------------------------------
@@ -121,8 +123,8 @@ st.session_state.driver_speed = driver_speed
 all_shots_base, scoring_shots, full_bag = build_all_candidate_shots(driver_speed)
 
 # Tabs
-tab_play, tab_range, tab_yardages, tab_strategy, tab_info = st.tabs(
-    ["Play", "Range", "Yardages", "Par Strategy", "How it Works"]
+tab_play, tab_range, tab_yardages, tab_strategy, tab_prep, tab_info = st.tabs(
+    ["Play", "Range", "Yardages", "Par Strategy", "Tournament Prep", "How it Works"]
 )
 
 # ------------------------------------------------------------
@@ -189,8 +191,8 @@ with tab_play:
         st.dataframe(df_score, use_container_width=True)
 
         st.info(
-            "Tournament Mode hides plays-like yardages, strategy labels, and shot rankings "
-            "to keep this view rules-friendly."
+            "In Tournament Mode, Golf Caddy acts like a digital yardage book. "
+            "No plays-like calculations, strategy suggestions, or club recommendations are used."
         )
 
     else:
@@ -1025,6 +1027,258 @@ with tab_strategy:
                 )
 
 # ------------------------------------------------------------
+# TOURNAMENT PREP TAB
+# ------------------------------------------------------------
+
+with tab_prep:
+    st.subheader("Tournament Prep: Plays-Like Trainer")
+
+    # Initialize scenario state
+    if "prep_raw" not in st.session_state:
+        st.session_state.prep_raw = 150.0
+        st.session_state.prep_wind_dir = "Into"
+        st.session_state.prep_wind_strength = "Medium"
+        st.session_state.prep_elevation = "Slight Uphill"
+        st.session_state.prep_lie = "Good"
+        st.session_state.prep_temp = 75.0
+        st.session_state.prep_pin_depth = "Middle"
+        st.session_state.prep_green_firmness = "Medium"
+        st.session_state.prep_user_estimate = 150.0
+
+    col_left, col_right = st.columns([2, 1])
+
+    with col_left:
+        st.markdown("### Scenario")
+
+        if st.button("Generate Random Scenario 🎲"):
+            scen = generate_random_scenario()
+            st.session_state.prep_raw = float(scen["raw_yards"])
+            st.session_state.prep_wind_dir = scen["wind_dir"]
+            st.session_state.prep_wind_strength = scen["wind_strength"]
+            st.session_state.prep_elevation = scen["elevation"]
+            st.session_state.prep_lie = scen["lie"]
+            st.session_state.prep_temp = float(scen["temp_f"])
+            st.session_state.prep_pin_depth = scen["pin_depth"]
+            st.session_state.prep_green_firmness = scen["green_firmness"]
+
+        raw_yards = st.number_input(
+            "Raw (laser) yardage to pin (yards)",
+            min_value=10.0,
+            max_value=300.0,
+            value=st.session_state.prep_raw,
+            step=1.0,
+            key="prep_raw",
+        )
+
+        wind_dir_options = ["None", "Into", "Down", "Cross"]
+        wind_dir = st.selectbox(
+            "Wind Direction",
+            wind_dir_options,
+            index=wind_dir_options.index(st.session_state.prep_wind_dir),
+            key="prep_wind_dir",
+        )
+
+        wind_strength_options = ["None", "Light", "Medium", "Heavy"]
+        wind_strength = st.selectbox(
+            "Wind Strength",
+            wind_strength_options,
+            index=wind_strength_options.index(st.session_state.prep_wind_strength),
+            key="prep_wind_strength",
+        )
+
+        elevation_options = [
+            "Flat",
+            "Slight Uphill",
+            "Moderate Uphill",
+            "Slight Downhill",
+            "Moderate Downhill",
+        ]
+        elevation_label = st.selectbox(
+            "Elevation",
+            elevation_options,
+            index=elevation_options.index(st.session_state.prep_elevation),
+            key="prep_elevation",
+        )
+
+        lie_options = ["Good", "Ok", "Bad"]
+        lie_label = st.selectbox(
+            "Lie",
+            lie_options,
+            index=lie_options.index(st.session_state.prep_lie),
+            key="prep_lie",
+        )
+
+        temp_f = st.slider(
+            "Temperature (°F)",
+            min_value=40.0,
+            max_value=100.0,
+            value=st.session_state.prep_temp,
+            step=1.0,
+            key="prep_temp",
+            help="Cooler temps generally make the ball fly shorter; warmer temps slightly longer.",
+        )
+
+        pin_depth = st.selectbox(
+            "Pin Depth on Green",
+            ["Front", "Middle", "Back"],
+            index=["Front", "Middle", "Back"].index(st.session_state.prep_pin_depth),
+            key="prep_pin_depth",
+        )
+
+        green_firmness_prep = st.selectbox(
+            "Green Firmness",
+            ["Soft", "Medium", "Firm"],
+            index=["Soft", "Medium", "Firm"].index(
+                st.session_state.prep_green_firmness
+            ),
+            key="prep_green_firmness",
+        )
+
+        st.markdown("### Your Plays-Like Estimate")
+
+        tendency_label = st.session_state.tendency  # same as used elsewhere
+        user_estimate = st.number_input(
+            "What do *you* think this shot plays as (yards)?",
+            min_value=10.0,
+            max_value=300.0,
+            value=float(st.session_state.prep_user_estimate),
+            step=1.0,
+            key="prep_user_estimate",
+        )
+
+        if st.button("Check My Math ✅"):
+            actual_plays_like = calculate_plays_like_yardage(
+                raw_yards=raw_yards,
+                wind_dir=wind_dir.lower(),
+                wind_strength_label=wind_strength.lower(),
+                elevation_label=elevation_label,
+                lie_label=lie_label,
+                tendency_label=tendency_label,
+                temp_f=temp_f,
+                baseline_temp_f=75.0,
+            )
+
+            diff = user_estimate - actual_plays_like
+            abs_diff = abs(diff)
+
+            st.markdown(
+                f"**Actual plays-like yardage: {actual_plays_like:.1f} yds** "
+                f"(you guessed {user_estimate:.1f} yds)"
+            )
+
+            if abs_diff <= 2:
+                st.success(
+                    f"Elite! You were within **{abs_diff:.1f} yds** — tour-level feel."
+                )
+            elif abs_diff <= 5:
+                st.info(
+                    f"Very solid. Within **{abs_diff:.1f} yds** — this is excellent for tournament golf."
+                )
+            elif abs_diff <= 10:
+                st.warning(
+                    f"Usable but room to tighten: off by **{abs_diff:.1f} yds**. "
+                    "Try breaking wind & slope into simpler steps."
+                )
+            else:
+                st.error(
+                    f"Off by **{abs_diff:.1f} yds**. This is where decision-making can really cost shots. "
+                    "Try re-checking your wind % and elevation rules."
+                )
+
+            # Show what Caddy would recommend for training purposes
+            skill_label = st.session_state.skill
+            skill_norm = skill_label.lower()
+            if skill_norm == "recreational":
+                prep_skill_factor = 1.3
+            elif skill_norm == "highly consistent":
+                prep_skill_factor = 0.8
+            else:
+                prep_skill_factor = 1.0
+
+            ranked_prep = recommend_shots_with_sg(
+                target_total=actual_plays_like,
+                candidates=all_shots_base,
+                short_trouble_label="None",
+                long_trouble_label="None",
+                left_trouble_label="None",
+                right_trouble_label="None",
+                green_firmness_label="Medium",
+                strategy_label=STRATEGY_BALANCED,
+                start_distance_yards=actual_plays_like,
+                start_surface="fairway",
+                front_yards=0.0,
+                back_yards=0.0,
+                skill_factor=prep_skill_factor,
+                pin_lateral_offset=0.0,
+                green_width=0.0,
+                n_sim=DEFAULT_N_SIM,
+                top_n=3,
+                sg_profile_factor=sg_profile_factor,
+            )
+
+            st.markdown("### What Golf Caddy Would Recommend (Training Only)")
+            if not ranked_prep:
+                st.write("No valid recommendations for this distance.")
+            else:
+                for i, shot in enumerate(ranked_prep, start=1):
+                    st.markdown(
+                        f"**{i}. {shot['club']} — {shot['shot_type']}** "
+                        f"(Carry ≈ {round(shot['carry'])} yds, "
+                        f"Total ≈ {round(shot['total'])} yds, "
+                        f"SG ≈ {shot['sg']:.3f})"
+                    )
+                st.caption(
+                    "Use this to compare your 'gut feel' with a consistent, data-driven suggestion. "
+                    "In real tournaments, Tournament Mode + your brain replaces this."
+                )
+
+    with col_right:
+        st.markdown("### Cheat Sheet (Train Your Tournament Brain)")
+
+        st.markdown("**Wind (rule-of-thumb)**")
+        st.markdown(
+            "- Into 5 mph: **+5%**\n"
+            "- Into 10 mph: **+8–10%**\n"
+            "- Into 15–20 mph: **+12–15%**\n"
+            "- Down 10 mph: **−5%**\n"
+            "- Down 15–20 mph: **−7–10%**"
+        )
+
+        st.markdown("**Elevation**")
+        st.markdown(
+            "- Slight Uphill: **+5 yds**\n"
+            "- Moderate Uphill: **+10 yds**\n"
+            "- Slight Downhill: **−5 yds**\n"
+            "- Moderate Downhill: **−10 yds**"
+        )
+
+        st.markdown("**Lie**")
+        st.markdown(
+            "- Good (fairway/tee): no change.\n"
+            "- Ok (light rough / small slope): often **+½ club** (~+5 yds mid-irons).\n"
+            "- Bad (heavy rough / poor stance): **+1 club** (~+10–15 yds) and expect more flyer/variance."
+        )
+
+        st.markdown("**Temperature**")
+        st.markdown(
+            "- Every **10°F colder** than your normal playing temp: ball flies ~**2–3 yds shorter** "
+            "on a mid-iron.\n"
+            "- Every **10°F warmer**: ~**+2–3 yds**."
+        )
+
+        st.markdown("**Tendencies**")
+        st.markdown(
+            "- If you usually come up **short**, mentally add **+3–5 yds**.\n"
+            "- If you often go **long**, subtract **3–5 yds** or favor the shorter club."
+        )
+
+        st.info(
+            "Use this tab off-course or in casual rounds to drill your mental math. "
+            "The goal is that by the time you’re in a tournament, your brain is doing "
+            "all of this automatically without needing the app."
+        )
+
+# ------------------------------------------------------------
 # HOW IT WORKS TAB
 # ------------------------------------------------------------
 
@@ -1038,7 +1292,7 @@ with tab_info:
 
         **Key ideas:**
 
-        - **Plays-Like Yardage** – your raw yardage adjusted for wind, elevation, lie, and tendencies.
+        - **Plays-Like Yardage** – your raw yardage adjusted for wind, elevation, lie, temperature, and tendencies.
         - **Shot Recommendations** – each option is evaluated on:
           - Distance match to the plays-like yardage  
           - Trouble short/long/left/right  
@@ -1048,6 +1302,8 @@ with tab_info:
           relative to the target line and plays-like distance.
         - **Par Strategy** – simple tee-club and layup/attack choices on Par 3s, 4s, and 5s
           using your actual bag numbers.
+        - **Tournament Prep Mode** – trains your *mental* plays-like calculations so you
+          can make great decisions even when tournament rules limit tech.
 
         This is intentionally **not** a tour-level physics engine, but it is realistic enough
         to guide better club selection and course management for most amateurs.
