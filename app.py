@@ -653,8 +653,7 @@ with tab_strategy:
                 st.caption(
                     f"Expected score ≈ {res['expected_score']:.2f}  "
                     f"(Layup plan ≈ {res['layup_score']:.2f}, "
-                    f\"Go-for-it plan ≈ {res['go_for_it_score']:.2f} if available)."
-                )
+                    f\"Go-for-it plan ≈ {res['go_for_it_score']:.2f} if available).", ) 
 
 
 # ============================================================
