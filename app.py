@@ -650,10 +650,13 @@ with tab_strategy:
                     f"remaining ≈ {res['remaining_after_tee']:.0f} yds)"
                 )
                 st.markdown(f"**Plan:** {res['strategy']}")
-                st.caption(
-                    f"Expected score ≈ {res['expected_score']:.2f}  "
-                    f"(Layup plan ≈ {res['layup_score']:.2f}, "
-                    f\"Go-for-it plan ≈ {res['go_for_it_score']:.2f} if available).", ) 
+
+                st.caption(f"""
+                Expected score ≈ {res['expected_score']:.2f}  
+                (Layup plan ≈ {res['layup_score']:.2f}, 
+                Go-for-it plan ≈ {res['go_for_it_score']:.2f} if available).
+                """)
+
 
 
 # ============================================================
