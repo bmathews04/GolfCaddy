@@ -664,38 +664,115 @@ with tab_strategy:
 # ============================================================
 
 with tab_prep:
-    st.subheader("Tournament Prep: Mental Adjustments Practice")
+    st.header("Tournament Prep: Mental Adjustments Practice")
 
-    if st.button("Generate Random Scenario 🎯"):
-        scenario = sge.generate_random_scenario()
-        st.write("**Raw scenario:**")
-        st.json(scenario)
+    # --- Buttons / scenario control ---
+    col_gen, col_info = st.columns([2, 3])
+    with col_gen:
+        if st.button("Generate Random Scenario 🎯"):
+            st.session_state.prep_scenario = generate_random_scenario()
+            st.session_state.prep_revealed = False
 
-        plays_like = sge.calculate_plays_like_yardage(
-            raw_yards=scenario["raw_yards"],
-            wind_dir=scenario["wind_dir"],
-            wind_strength_label=scenario["wind_strength"],
-            elevation_label=scenario["elevation"],
-            lie_label=scenario["lie"],
-            tendency_label="Neutral",
-            temp_f=scenario["temp_f"],
-            baseline_temp_f=75.0,
+    with col_info:
+        st.caption(
+            "Use this to **train your brain** to do legal on-course adjustments "
+            "(wind, lie, elevation, temperature) **without** depending on the app during play."
         )
 
+    scenario = st.session_state.get("prep_scenario", None)
+
+    # If no scenario yet, create one on first load
+    if scenario is None:
+        scenario = generate_random_scenario()
+        st.session_state.prep_scenario = scenario
+        st.session_state.prep_revealed = False
+
+    st.markdown("**Raw scenario:**")
+    st.json(scenario)
+
+    # --- Engine plays-like (hidden until reveal) ---
+    # You can choose to include your personal tendency here; for now we keep it Neutral
+    engine_plays_like = calculate_plays_like_yardage(
+        raw_yards=scenario["raw_yards"],
+        wind_dir=scenario["wind_dir"],
+        wind_strength_label=scenario["wind_strength"],
+        elevation_label=scenario["elevation"],
+        lie_label=scenario["lie"],
+        tendency_label="Neutral",      # or st.session_state.tendency if you prefer
+        temp_f=scenario["temp_f"],
+        baseline_temp_f=75.0,
+    )
+
+    # --- User guess input ---
+    st.markdown("### Your Mental Adjustment")
+
+    guess = st.number_input(
+        "What yardage do you think this plays as? (yards)",
+        min_value=50.0,
+        max_value=260.0,
+        step=1.0,
+        key="prep_guess",
+        help=(
+            "Look only at the raw scenario above and apply your own mental rules of thumb "
+            "for wind, lie, elevation, and temperature. Then enter your best estimate here."
+        ),
+    )
+
+    reveal = st.button("Reveal Answer ✅")
+
+    if reveal:
+        st.session_state.prep_revealed = True
+
+    if st.session_state.get("prep_revealed", False):
+        # Use last guess from session_state to keep it stable across reruns
+        user_guess = float(st.session_state.get("prep_guess", guess or 0.0))
+        diff = user_guess - engine_plays_like
+        diff_abs = abs(diff)
+
+        if diff_abs < 0.5:
+            qualitative = "Spot on. That’s tour-level adjustment."
+        elif diff_abs <= 2:
+            qualitative = "Excellent. Within 2 yards of the engine."
+        elif diff_abs <= 5:
+            qualitative = "Solid. Within 5 yards—very playable on course."
+        else:
+            qualitative = "Big gap. Try walking through each factor more deliberately."
+
+        direction = "longer than" if diff > 0 else "shorter than" if diff < 0 else "exactly equal to"
+
+        st.markdown("### Results")
+
+        col_l, col_r = st.columns(2)
+        with col_l:
+            st.metric("Your plays-like estimate", f"{user_guess:.1f} yds")
+        with col_r:
+            st.metric("Engine plays-like (for practice)", f"{engine_plays_like:.1f} yds")
+
         st.markdown(
-            f"**Engine plays-like result (for practice only):** "
-            f"raw {scenario['raw_yards']} → plays as ~{plays_like:.1f} yds."
+            f"- Difference: **{diff_abs:.1f} yds** ({'you played it ' if diff != 0 else ''}"
+            f"{direction} the engine).\n\n"
+            f"- {qualitative}"
         )
 
         st.info(
-            "Use this only when practicing. In real tournament play, you’d mentally "
-            "estimate these adjustments yourself without consulting the engine."
+            "Use this only when **practicing**. In real tournament play, you’d make these "
+            "adjustments in your head using your own rules of thumb (and keep the app in "
+            "Tournament Mode / yardage-book only)."
         )
-    else:
-        st.caption(
-            "Click 'Generate Random Scenario' to practice estimating plays-like yardage "
-            "from lie, wind, elevation, temperature, and pin depth."
-        )
+
+    st.markdown("---")
+    st.markdown("#### Suggested Mental Rules of Thumb (Practice Only)")
+    st.markdown(
+        "- Into wind: add ~1 yard per mph of wind for a 150-yard shot (scale a bit for longer/shorter).  \n"
+        "- Downwind: subtract ~0.5 yard per mph of wind.  \n"
+        "- Slight uphill: add ~5 yards.  \n"
+        "- Moderate uphill: add ~10 yards.  \n"
+        "- Slight downhill: subtract ~5 yards.  \n"
+        "- Moderate downhill: subtract ~10 yards.  \n"
+        "- Cold (10°F below 75°F): lose ~2–3 yards at 150y; hot (10°F above) gain ~2–3 yards.  \n"
+        "- Bad lie (thick rough / buried): expect it to come out shorter; good lie: normal."
+    )
+
 
 
 # ============================================================
