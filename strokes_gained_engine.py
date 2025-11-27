@@ -1,9 +1,9 @@
 import math
 import random
 
-# ------------------------------------------------------------
+# ============================================================
 # Constants & Baselines
-# ------------------------------------------------------------
+# ============================================================
 
 BASELINE_DRIVER_SPEED = 100.0  # mph
 
@@ -80,15 +80,17 @@ STRATEGY_AGGRESSIVE = "Aggressive"
 DEFAULT_N_SIM = 400
 
 
-# ------------------------------------------------------------
+# ============================================================
 # Utility functions
-# ------------------------------------------------------------
+# ============================================================
 
-def _scale_value(base_value: float, driver_speed_mph: float) -> float:
+def _scale_value(base_value, driver_speed_mph):
+    """Scale a baseline value linearly with driver speed."""
     return base_value * (driver_speed_mph / BASELINE_DRIVER_SPEED)
 
 
-def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> float:
+def adjust_for_wind(target, wind_dir, wind_strength_label):
+    """Into hurts more than downwind helps. Cross adds a small 'safety' bump."""
     label = (wind_strength_label or "none").lower().strip()
     wind_mph = WIND_STRENGTH_MAP.get(label, 0)
 
@@ -108,7 +110,7 @@ def adjust_for_wind(target: float, wind_dir: str, wind_strength_label: str) -> f
     return adjusted
 
 
-def apply_elevation(target: float, elevation_label: str) -> float:
+def apply_elevation(target, elevation_label):
     label = (elevation_label or "flat").lower().strip()
     if label.startswith("slight up"):
         delta = 5.0
@@ -123,7 +125,7 @@ def apply_elevation(target: float, elevation_label: str) -> float:
     return target + delta
 
 
-def apply_lie(target: float, lie_label: str) -> float:
+def apply_lie(target, lie_label):
     lie = (lie_label or "good").lower().strip()
     if lie == "good":
         mult = 1.00
@@ -136,56 +138,50 @@ def apply_lie(target: float, lie_label: str) -> float:
     return target * mult
 
 
-def apply_temperature(target: float, temp_f: float, baseline_temp_f: float = 75.0) -> float:
+def _apply_temperature(target, temp_f, baseline_temp_f=75.0):
     """
-    Simple temperature model:
-      - Each 10°F colder than baseline reduces distance ~2.5 yards at 150y
-      - Scales linearly with distance.
+    Very simple temperature adjustment:
+    each 10°F colder than baseline reduces distance ~2.5 yds at 150y,
+    scaled by shot length.
     """
     if temp_f is None:
         return target
-    delta = temp_f - baseline_temp_f  # negative if colder
-    # 2.5 yds per 10°F at 150y, scaled by target distance
+    delta = temp_f - baseline_temp_f  # negative = colder
     adj = (delta / 10.0) * 2.5 * (target / 150.0)
     return target + adj
 
 
 def calculate_plays_like_yardage(
-    raw_yards: float,
-    wind_dir: str,
-    wind_strength_label: str,
-    elevation_label: str,
-    lie_label: str,
-    tendency_label: str = "Neutral",
-    temp_f: float = 75.0,
-    baseline_temp_f: float = 75.0,
-) -> float:
-    """
-    Shared 'plays-like' calculator used in Tournament Prep and (optionally) elsewhere.
-    """
+    raw_yards,
+    wind_dir,
+    wind_strength_label,
+    elevation_label,
+    lie_label,
+    tendency_label="Neutral",
+    temp_f=75.0,
+    baseline_temp_f=75.0,
+):
+    """Shared plays-like calculator (used by Tournament Prep)."""
     val = raw_yards
     val = adjust_for_wind(val, wind_dir, wind_strength_label)
     val = apply_elevation(val, elevation_label)
     val = apply_lie(val, lie_label)
-    val = apply_temperature(val, temp_f, baseline_temp_f)
+    val = _apply_temperature(val, temp_f, baseline_temp_f)
 
-    tendency_label = (tendency_label or "Neutral")
-    tendency_adj = 0.0
+    tendency_label = tendency_label or "Neutral"
     if tendency_label == "Usually Short":
-        tendency_adj = 3.0
+        val += 3.0
     elif tendency_label == "Usually Long":
-        tendency_adj = -3.0
+        val -= 3.0
 
-    val += tendency_adj
     return val
 
 
-# ------------------------------------------------------------
+# ============================================================
 # Dispersion & SG helpers
-# ------------------------------------------------------------
+# ============================================================
 
-def get_dispersion_sigma(category: str) -> float:
-    """Approximate depth dispersion (1σ, yards)."""
+def get_dispersion_sigma(category):
     cat = (category or "").lower()
     if cat in ("driver", "wood", "hybrid"):
         return 18.0
@@ -200,8 +196,7 @@ def get_dispersion_sigma(category: str) -> float:
     return 10.0
 
 
-def get_lateral_sigma(category: str) -> float:
-    """Approximate lateral dispersion (1σ, yards)."""
+def get_lateral_sigma(category):
     cat = (category or "").lower()
     if cat in ("driver", "wood", "hybrid"):
         return 20.0
@@ -216,11 +211,8 @@ def get_lateral_sigma(category: str) -> float:
     return 10.0
 
 
-def _expected_strokes_from_distance(distance_yards: float) -> float:
-    """
-    Very rough baseline: expected strokes to hole out from given distance.
-    Good enough for *relative* strokes-gained comparisons.
-    """
+def _expected_strokes_from_distance(distance_yards):
+    """Rough strokes baseline for amateurs; used only for relative SG."""
     d = max(1.0, min(distance_yards, 350.0))
     if d <= 50:
         return 1.8 + 0.008 * d
@@ -231,7 +223,7 @@ def _expected_strokes_from_distance(distance_yards: float) -> float:
     return 3.0 + 0.0045 * d
 
 
-def _trouble_factor(label: str) -> float:
+def _trouble_factor(label):
     l = (label or "none").lower()
     if l == "mild":
         return 1.15
@@ -240,7 +232,7 @@ def _trouble_factor(label: str) -> float:
     return 1.0
 
 
-def _strategy_multiplier(strategy_label: str) -> float:
+def _strategy_multiplier(strategy_label):
     s = (strategy_label or STRATEGY_BALANCED).lower()
     if s == "conservative":
         return 0.9
@@ -249,18 +241,18 @@ def _strategy_multiplier(strategy_label: str) -> float:
     return 1.0
 
 
-def _normal_cdf(x: float, mu: float = 0.0, sigma: float = 1.0) -> float:
+def _normal_cdf(x, mu=0.0, sigma=1.0):
     if sigma <= 0:
         return 0.5 if x >= mu else 0.0
     z = (x - mu) / (sigma * math.sqrt(2.0))
     return 0.5 * (1.0 + math.erf(z))
 
 
-# ------------------------------------------------------------
+# ============================================================
 # Bag building
-# ------------------------------------------------------------
+# ============================================================
 
-def _build_full_bag(driver_speed_mph: float):
+def _build_full_bag(driver_speed_mph):
     out = []
     for club, bs, launch, spin, carry, total in FULL_BAG_BASE:
         out.append(
@@ -276,12 +268,12 @@ def _build_full_bag(driver_speed_mph: float):
     return out
 
 
-def _build_scoring_shots(driver_speed_mph: float):
+def _build_scoring_shots(driver_speed_mph):
     shots = []
     for club, shot_type, traj in SCORING_DEFS:
         full_carry = _scale_value(FULL_WEDGE_CARRIES[club], driver_speed_mph)
         carry = full_carry * SHOT_MULTIPLIERS[shot_type]
-        total = carry  # assume small roll
+        total = carry  # small roll assumed
         shots.append(
             {
                 "club": club,
@@ -295,27 +287,27 @@ def _build_scoring_shots(driver_speed_mph: float):
     return shots
 
 
-def build_all_candidate_shots(driver_speed_mph: float):
+def build_all_candidate_shots(driver_speed_mph):
     """
     Returns:
-      all_shots_base: list of candidate shots (dicts)
-      scoring_shots: wedge scoring shots
+      all_shots_base: list of candidate full and partial shots
+      scoring_shots: wedge scoring shots only
       full_bag:      full-club yardage table
     """
     full_bag = _build_full_bag(driver_speed_mph)
     scoring_shots = _build_scoring_shots(driver_speed_mph)
     all_shots = []
 
-    # Full swings
     for row in full_bag:
         club = row["Club"]
         carry = row["Carry (yds)"]
         total = row["Total (yds)"]
+
         if club == "Driver":
             cat = "driver"
-        elif club in ("3W",):
+        elif club == "3W":
             cat = "wood"
-        elif club in ("3H",):
+        elif club == "3H":
             cat = "hybrid"
         elif club in ("4i", "5i"):
             cat = "long_iron"
@@ -337,42 +329,34 @@ def build_all_candidate_shots(driver_speed_mph: float):
             }
         )
 
-    # Add wedges/partials
     all_shots.extend(scoring_shots)
-
     return all_shots, scoring_shots, full_bag
 
 
-# ------------------------------------------------------------
-# Core recommendation engine
-# ------------------------------------------------------------
+# ============================================================
+# Recommendation engine (simplified SG)
+# ============================================================
 
 def recommend_shots_with_sg(
-    target_total: float,
+    target_total,
     candidates,
-    short_trouble_label: str = "None",
-    long_trouble_label: str = "None",
-    left_trouble_label: str = "None",
-    right_trouble_label: str = "None",
-    green_firmness_label: str = "Medium",
-    strategy_label: str = STRATEGY_BALANCED,
-    start_distance_yards: float = None,
-    start_surface: str = "fairway",
-    front_yards: float = 0.0,
-    back_yards: float = 0.0,
-    skill_factor: float = 1.0,
-    pin_lateral_offset: float = 0.0,
-    green_width: float = 0.0,
-    n_sim: int = DEFAULT_N_SIM,
-    top_n: int = 5,
-    sg_profile_factor: float = 1.0,
+    short_trouble_label="None",
+    long_trouble_label="None",
+    left_trouble_label="None",
+    right_trouble_label="None",
+    green_firmness_label="Medium",
+    strategy_label=STRATEGY_BALANCED,
+    start_distance_yards=None,
+    start_surface="fairway",
+    front_yards=0.0,
+    back_yards=0.0,
+    skill_factor=1.0,
+    pin_lateral_offset=0.0,
+    green_width=0.0,
+    n_sim=DEFAULT_N_SIM,
+    top_n=5,
+    sg_profile_factor=1.0,
 ):
-    """
-    Simplified strokes-gained style ranking using:
-      - distance error vs plays-like yardage
-      - trouble modifiers for short/long
-      - rough dispersion model (depth only for SG; lateral just in text/visuals)
-    """
     if start_distance_yards is None:
         start_distance_yards = target_total
 
@@ -399,45 +383,27 @@ def recommend_shots_with_sg(
             miss_penalty = long_factor
 
         expected_from_leave = _expected_strokes_from_distance(max(20.0, abs_diff))
+        # Very simple expected strokes model
+        exp_strokes = baseline + (abs_diff / 50.0) * miss_penalty * sf
 
-        exp_strokes = (
-            baseline
-            + (abs_diff / 50.0) * miss_penalty * sf
-            + (1.0 - p_close) * 0.1
-        )
         sg = baseline - exp_strokes
 
-        reason_lines = []
-        reason_lines.append(
-            "Distances match the plays-like yardage "
-            + ("closely." if abs_diff <= 5 else "reasonably well.")
-        )
+        reason_parts = []
+        if abs_diff <= 5:
+            reason_parts.append("Distances match the plays-like yardage closely.")
+        else:
+            reason_parts.append("Distances are reasonably close to the plays-like yardage.")
         if miss_penalty > 1.0:
             if diff < 0 and short_trouble_label.lower() != "none":
-                reason_lines.append(
-                    "Short misses are penal here; this option risks finishing short into trouble."
-                )
+                reason_parts.append("Short misses are penal here; being short is risky.")
             elif diff > 0 and long_trouble_label.lower() != "none":
-                reason_lines.append(
-                    "Long misses are penal here; this option risks flying long into trouble."
-                )
-        else:
-            reason_lines.append(
-                "Misses in this direction are relatively safer than the opposite side."
-            )
-
+                reason_parts.append("Long misses are penal here; being long is risky.")
         if sg > 0.2:
-            reason_lines.append(
-                "Strong strokes-gained profile compared with a typical shot from here."
-            )
+            reason_parts.append("Strong strokes-gained style profile vs a typical shot.")
         elif sg < -0.2:
-            reason_lines.append(
-                "Weaker strokes-gained profile; consider a slightly safer alternative."
-            )
+            reason_parts.append("Weaker strokes-gained style profile; consider safer options.")
         else:
-            reason_lines.append(
-                "Strokes-gained profile is roughly neutral vs. an average shot from here."
-            )
+            reason_parts.append("Strokes-gained profile is roughly neutral.")
 
         shot_out = dict(shot)
         shot_out.update(
@@ -446,7 +412,7 @@ def recommend_shots_with_sg(
                 "sg": sg,
                 "expected_strokes": exp_strokes,
                 "p_close": p_close,
-                "reason": " ".join(reason_lines),
+                "reason": " ".join(reason_parts),
             }
         )
         results.append(shot_out)
@@ -455,10 +421,8 @@ def recommend_shots_with_sg(
     return results[:top_n]
 
 
-def compute_optimal_carry_for_target(target_total: float, category: str) -> float:
-    """
-    Placeholder 'perfect carry' calculator: target minus a small category bias.
-    """
+def compute_optimal_carry_for_target(target_total, category):
+    """Simple category-based 'ideal carry' offset."""
     cat = (category or "").lower()
     if cat in ("driver", "wood", "hybrid"):
         return target_total - 5.0
@@ -467,22 +431,22 @@ def compute_optimal_carry_for_target(target_total: float, category: str) -> floa
     return target_total - 1.0
 
 
-# ------------------------------------------------------------
-# Par 3 / 4 / 5 Strategy (used by Par Strategy tab)
-# ------------------------------------------------------------
+# ============================================================
+# Par 3 / 4 / 5 Strategy (simplified)
+# ============================================================
 
 def par3_strategy(
-    hole_yards: float,
+    hole_yards,
     candidates,
-    skill_factor: float = 1.0,
-    green_width: float = 0.0,
-    short_trouble_label: str = "None",
-    long_trouble_label: str = "None",
-    left_trouble_label: str = "None",
-    right_trouble_label: str = "None",
-    strategy_label: str = STRATEGY_BALANCED,
-    sg_profile_factor: float = 1.0,
-    n_sim: int = DEFAULT_N_SIM,
+    skill_factor=1.0,
+    green_width=0.0,
+    short_trouble_label="None",
+    long_trouble_label="None",
+    left_trouble_label="None",
+    right_trouble_label="None",
+    strategy_label=STRATEGY_BALANCED,
+    sg_profile_factor=1.0,
+    n_sim=DEFAULT_N_SIM,
 ):
     ranked = recommend_shots_with_sg(
         target_total=hole_yards,
@@ -494,40 +458,35 @@ def par3_strategy(
         strategy_label=strategy_label,
         start_distance_yards=hole_yards,
         start_surface="tee",
-        green_width=green_width,
+        front_yards=0.0,
+        back_yards=0.0,
         skill_factor=skill_factor,
+        pin_lateral_offset=0.0,
+        green_width=green_width,
         n_sim=n_sim,
-        sg_profile_factor=sg_profile_factor,
         top_n=5,
+        sg_profile_factor=sg_profile_factor,
     )
 
     if not ranked:
         return {"best": None, "alternatives": []}
 
     best = ranked[0]
-
     sigma_depth = get_dispersion_sigma(best["category"]) * skill_factor
-    sigma_lat = get_lateral_sigma(best["category"]) * skill_factor
     diff = best["total"] - hole_yards
 
-    def phi(x, mu=0.0, sigma=1.0):
+    def phi(x, mu, sigma):
         return _normal_cdf(x, mu, sigma)
 
     p_depth_5 = phi(5.0, diff, sigma_depth) - phi(-5.0, diff, sigma_depth)
     p_depth_10 = phi(10.0, diff, sigma_depth) - phi(-10.0, diff, sigma_depth)
-    p_lat_5 = phi(5.0, 0.0, sigma_lat) - phi(-5.0, 0.0, sigma_lat)
-    p_lat_10 = phi(10.0, 0.0, sigma_lat) - phi(-10.0, 0.0, sigma_lat)
+    # approximate, ignoring lateral here
+    p_within_5 = max(0.0, min(1.0, p_depth_5))
+    p_within_10 = max(0.0, min(1.0, p_depth_10))
+    p_on_green = p_within_10
 
-    p_within_5 = max(0.0, min(1.0, p_depth_5 * p_lat_5))
-    p_within_10 = max(0.0, min(1.0, p_depth_10 * p_lat_10))
-
-    if green_width > 0:
-        half_w = green_width / 2.0
-        p_lat_green = phi(half_w, 0.0, sigma_lat) - phi(-half_w, 0.0, sigma_lat)
-        p_depth_green = phi(5.0, diff, sigma_depth) - phi(-5.0, diff, sigma_depth)
-        p_on_green = max(0.0, min(1.0, p_lat_green * p_depth_green))
-    else:
-        p_on_green = p_within_10
+    baseline_par3 = 3.1
+    sg = baseline_par3 - best["expected_strokes"]
 
     best_out = dict(best)
     best_out.update(
@@ -535,23 +494,21 @@ def par3_strategy(
             "p_on_green": p_on_green,
             "p_within_5": p_within_5,
             "p_within_10": p_within_10,
+            "sg": sg,
         }
     )
-
-    baseline_par3 = 3.1
-    best_out["sg"] = baseline_par3 - best["expected_strokes"]
 
     return {"best": best_out, "alternatives": ranked[1:4]}
 
 
 def par4_strategy(
-    hole_yards: float,
+    hole_yards,
     full_bag,
-    skill_factor: float = 1.0,
-    fairway_width_label: str = "Medium",
-    tee_left_trouble_label: str = "None",
-    tee_right_trouble_label: str = "None",
-    sg_profile_factor: float = 1.0,
+    skill_factor=1.0,
+    fairway_width_label="Medium",
+    tee_left_trouble_label="None",
+    tee_right_trouble_label="None",
+    sg_profile_factor=1.0,
 ):
     fw = (fairway_width_label or "Medium").lower()
     if fw == "narrow":
@@ -590,7 +547,7 @@ def par4_strategy(
                      trouble_mult(tee_right_trouble_label))
         approach *= 1.0 + miss_prob * (t_mult - 1.0)
 
-        expected_score = 1.0 + approach  # tee shot + rest
+        expected_score = 1.0 + approach  # tee + rest
         baseline_score = 4.2
         sg_vs_baseline = baseline_score - expected_score
 
@@ -614,13 +571,13 @@ def par4_strategy(
 
 
 def par5_strategy(
-    hole_yards: float,
+    hole_yards,
     full_bag,
-    skill_factor: float = 1.0,
-    fairway_width_label: str = "Medium",
-    tee_left_trouble_label: str = "None",
-    tee_right_trouble_label: str = "None",
-    sg_profile_factor: float = 1.0,
+    skill_factor=1.0,
+    fairway_width_label="Medium",
+    tee_left_trouble_label="None",
+    tee_right_trouble_label="None",
+    sg_profile_factor=1.0,
 ):
     par4_res = par4_strategy(
         hole_yards=hole_yards,
@@ -678,14 +635,15 @@ def par5_strategy(
     }
 
 
-# ------------------------------------------------------------
+# ============================================================
 # Tournament Prep helpers
-# ------------------------------------------------------------
+# ============================================================
 
 def generate_random_scenario():
     """
     Random practice scenario for Tournament Prep Mode.
-    Returns dict with raw_yards, wind_dir, wind_strength, elevation, lie, temp_f, pin_depth, green_firmness.
+    Returns dict with raw_yards, wind_dir, wind_strength, elevation,
+    lie, temp_f, pin_depth, green_firmness.
     """
     raw_yards = random.randint(110, 220)
     wind_dir = random.choice(["None", "Into", "Down", "Cross"])
