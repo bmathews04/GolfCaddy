@@ -3,45 +3,39 @@ import pandas as pd
 import numpy as np
 import altair as alt
 
-from strokes_gained_engine import (
-    build_all_candidate_shots,
-    adjust_for_wind,
-    apply_elevation,
-    apply_lie,
-    recommend_shots_with_sg,
-    compute_optimal_carry_for_target,
-    get_dispersion_sigma,
-    get_lateral_sigma,
-    STRATEGY_BALANCED,
-    STRATEGY_CONSERVATIVE,
-    STRATEGY_AGGRESSIVE,
-    DEFAULT_N_SIM,
-    par3_strategy,
-    par4_strategy,
-    par5_strategy,
-    calculate_plays_like_yardage,
-    generate_random_scenario,
-)
+import strokes_gained_engine as sge
+
 
 # ------------------------------------------------------------
 # Page config & session defaults
 # ------------------------------------------------------------
+# Streamlit configuration
+st.set_page_config(
+    page_title="Golf Caddy",
+    page_icon="⛳",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-st.set_page_config(page_title="Golf Caddy", layout="wide")
+# Ensure session state defaults exist
+if "mode" not in st.session_state:
+    st.session_state.mode = "Quick"
 
-DEFAULTS = {
-    "driver_speed": 100,
-    "mode": "Quick",
-    "tendency": "Neutral",
-    "skill": "Intermediate",
-}
+if "skill" not in st.session_state:
+    st.session_state.skill = "Intermediate"
 
+if "tendency" not in st.session_state:
+    st.session_state.tendency = "Neutral"
 
+if "tournament_mode" not in st.session_state:
+    st.session_state.tournament_mode = False
+
+if "handicap_factor" not in st.session_state:
+    st.session_state.handicap_factor = 1.0
 def init_session_state():
     for k, v in DEFAULTS.items():
         if k not in st.session_state:
             st.session_state[k] = v
-
 
 init_session_state()
 
