@@ -142,6 +142,17 @@ with st.sidebar:
         "Larger factor = wider windows and more conservative expectations."
     )
 
+    # NEW: ambient temperature (°F)
+    temp_f = st.slider(
+        "Ambient Temperature (°F)",
+        min_value=40,
+        max_value=100,
+        value=int(st.session_state.get("temp_f", 75)),
+        step=1,
+        help="Used for plays-like yardage calculations (hotter = ball flies farther).",
+    )
+    st.session_state.temp_f = float(temp_f)
+    
     st.markdown("---")
     st.markdown("**About Tournament Mode**")
     st.caption(
@@ -699,7 +710,7 @@ with tab_prep:
         elevation_label=scenario["elevation"],
         lie_label=scenario["lie"],
         tendency_label="Neutral",      # or st.session_state.tendency if you prefer
-        temp_f=scenario["temp_f"],
+        temp_f=st.session_state.get("temp_f", 75.0),
         baseline_temp_f=75.0,
     )
 
