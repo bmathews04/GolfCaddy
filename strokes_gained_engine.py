@@ -677,4 +677,3 @@ def generate_random_scenario():
         "pin_depth": pin_depth,
         "green_firmness": green_firmness,
     }
-
