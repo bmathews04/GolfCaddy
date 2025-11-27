@@ -670,7 +670,7 @@ with tab_prep:
     col_gen, col_info = st.columns([2, 3])
     with col_gen:
         if st.button("Generate Random Scenario 🎯"):
-            st.session_state.prep_scenario = generate_random_scenario()
+            st.session_state.prep_scenario = sge.generate_random_scenario()
             st.session_state.prep_revealed = False
 
     with col_info:
@@ -683,7 +683,7 @@ with tab_prep:
 
     # If no scenario yet, create one on first load
     if scenario is None:
-        scenario = generate_random_scenario()
+        scenario = sge.generate_random_scenario()
         st.session_state.prep_scenario = scenario
         st.session_state.prep_revealed = False
 
@@ -692,7 +692,7 @@ with tab_prep:
 
     # --- Engine plays-like (hidden until reveal) ---
     # You can choose to include your personal tendency here; for now we keep it Neutral
-    engine_plays_like = calculate_plays_like_yardage(
+    engine_plays_like = sge.calculate_plays_like_yardage(
         raw_yards=scenario["raw_yards"],
         wind_dir=scenario["wind_dir"],
         wind_strength_label=scenario["wind_strength"],
