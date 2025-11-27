@@ -112,12 +112,14 @@ st.title("Golf Caddy")
 
 driver_speed = st.slider(
     "Current Driver Speed (mph)",
-    min_value=90,
-    max_value=120,
-    value=st.session_state.driver_speed,
+    min_value=90.0,
+    max_value=120.0,
+    value=float(st.session_state.driver_speed),
+    step=1.0,  # or 0.5 if you want half-mph increments
     help="Used to scale your entire bag's distances from a 100 mph baseline.",
 )
-st.session_state.driver_speed = driver_speed
+
+st.session_state.driver_speed = float(driver_speed)
 
 all_shots_base, scoring_shots, full_bag = build_all_candidate_shots(driver_speed)
 
