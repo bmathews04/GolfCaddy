@@ -1,59 +1,64 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import altair as alt
+import math
 
+# Import the strokes-gained / distance engine as a module
 import strokes_gained_engine as sge
 
-
-# ------------------------------------------------------------
-# Page config & session defaults
-# ------------------------------------------------------------
-# Streamlit configuration
+# Page config
 st.set_page_config(
     page_title="Golf Caddy",
     page_icon="⛳",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# Ensure session state defaults exist
-if "mode" not in st.session_state:
-    st.session_state.mode = "Quick"
+# -------------------------------------------------------------------
+# Session-state defaults
+# -------------------------------------------------------------------
 
-if "skill" not in st.session_state:
-    st.session_state.skill = "Intermediate"
+DEFAULTS = {
+    "mode": "Quick",              # Quick vs Advanced Caddy mode
+    "skill": "Intermediate",      # Ball striking consistency
+    "tendency": "Neutral",        # Usually Short / Neutral / Usually Long
+    "tournament_mode": False,     # Tournament vs Normal play
+    "handicap_factor": 1.0,       # SG / dispersion scaling by handicap
+    "driver_speed": 100.0,        # mph, used to scale the bag
+}
 
-if "tendency" not in st.session_state:
-    st.session_state.tendency = "Neutral"
 
-if "tournament_mode" not in st.session_state:
-    st.session_state.tournament_mode = False
-
-if "handicap_factor" not in st.session_state:
-    st.session_state.handicap_factor = 1.0
 def init_session_state():
+    """Initialize Streamlit session_state with safe defaults."""
     for k, v in DEFAULTS.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
+
+# Call once at import time so everything below can rely on session_state
 init_session_state()
 
-# Simple club-category helper for tables
+# -------------------------------------------------------------------
+# Simple club-category helper for tables (rest of your file continues)
+# -------------------------------------------------------------------
+
 def _category_for_club(club: str) -> str:
-    if club in ["PW", "GW", "SW", "LW"]:
-        return "scoring_wedge"
-    if club in ["9i", "8i"]:
-        return "short_iron"
-    if club in ["7i", "6i", "5i"]:
-        return "mid_iron"
-    if club in ["4i"]:
-        return "long_iron"
-    if club in ["3W", "3H"]:
-        return "wood"
-    if club in ["Driver"]:
+    """Map a club name to a rough category label (for tables/dispersion)."""
+    c = club.lower()
+    if c in ("driver",):
         return "driver"
-    return "mid_iron"
+    if c in ("3w", "5w"):
+        return "wood"
+    if c in ("3h", "4h", "5h"):
+        return "hybrid"
+    if c in ("4i", "5i"):
+        return "long_iron"
+    if c in ("6i", "7i"):
+        return "mid_iron"
+    if c in ("8i", "9i"):
+        return "short_iron"
+    return "scoring_wedge"
+
 
 
 # ------------------------------------------------------------
