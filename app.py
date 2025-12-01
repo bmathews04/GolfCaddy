@@ -641,7 +641,7 @@ with tab_strategy:
                     f"(SG vs baseline ≈ {best['sg_vs_baseline']:.3f})."
                 )
 
-        elif hole_type == "Par 5":
+        elif par_type == "Par 5":
             res = sge.par5_strategy(
                 hole_yards=hole_yards,
                 full_bag=full_bag,
