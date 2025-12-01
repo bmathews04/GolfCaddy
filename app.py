@@ -628,10 +628,10 @@ with tab_play:
                     # 3.3 Green overview map
                     def draw_green_overview(short_trouble, long_trouble, left_trouble, right_trouble,
                                             pin_location, strategy_label: str = "Balanced"):
-    """
-    Simple 2D green overview with trouble zones and pin position.
-    Uses only safe Altair patterns (no positional encodings).
-    """
+                        """
+                        Simple 2D green overview with trouble zones and pin position.
+                        Uses only safe Altair patterns (no positional encodings).
+                        """
 
                         trouble_height_map = {"None": 0, "Mild": 8, "Severe": 14}
 
