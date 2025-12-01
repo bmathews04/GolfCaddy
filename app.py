@@ -650,7 +650,7 @@ with tab_strategy:
                 fairway_width_label=fairway_width,
                 tee_left_trouble_label=tee_left_trouble,
                 tee_right_trouble_label=tee_right_trouble,
-                sg_profile_factor=handicap_factor,
+                sg_profile_factor=st.session_state.handicap_factor,
             )
 
             best_tee = res.get("best_tee")
