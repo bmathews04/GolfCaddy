@@ -336,6 +336,29 @@ def get_lateral_sigma(category):
         return 7.0
     return 10.0
 
+def lie_dispersion_factor(surface: str) -> float:
+    """
+    How much the *lie / surface* inflates dispersion (shot pattern size).
+
+    - 'tee' / 'fairway' / 'good' -> baseline 1.0
+    - light rough / first cut / 'ok' -> a bit wider
+    - rough / deep rough / 'bad' / recovery -> much wider
+    - sand / bunker -> slightly wider, but controlled
+    """
+    s = (surface or "").lower().strip()
+
+    if s in ("tee", "fairway", "good"):
+        return 1.0
+    if s in ("first cut", "light rough", "ok"):
+        return 1.15
+    if s in ("rough", "deep rough", "bad", "recovery", "trees"):
+        return 1.3
+    if s in ("sand", "bunker"):
+        return 1.25
+
+    # Fallback
+    return 1.0
+
 
 def _expected_strokes_from_distance(distance_yards):
     """Rough strokes baseline for amateurs; used only for relative SG."""
@@ -550,7 +573,8 @@ def recommend_shots_with_sg(
         abs_diff = abs(diff)
 
         # Depth dispersion for this club category
-        sigma_depth = get_dispersion_sigma(shot["category"]) * skill_factor
+        lie_factor = lie_dispersion_factor(start_surface)
+        sigma_depth = get_dispersion_sigma(shot["category"]) * skill_factor * lie_factor
         p_close = _normal_cdf(5.0, diff, sigma_depth) - _normal_cdf(
             -5.0, diff, sigma_depth
         )
@@ -670,6 +694,7 @@ def par3_strategy(
         return {"best": None, "alternatives": []}
 
     best = ranked[0]
+    lie_factor = lie_dispersion_factor("tee")
     sigma_depth = get_dispersion_sigma(best["category"]) * skill_factor
     diff = best["total"] - hole_yards
 
