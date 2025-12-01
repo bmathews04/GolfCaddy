@@ -558,160 +558,178 @@ with tab_play:
                         st.plotly_chart(fig, use_container_width=True)
 
                     # 3.2 Top-5 dispersion “bands” in a row
-                    def draw_top5_grid(rec_list, plays_like):
-                        rec_df = pd.DataFrame(rec_list[:5])
-                        if rec_df.empty:
+                    def draw_shot_windows(recommendations, plays_like_yards: float, skill_factor: float = 1.0):
+                        """
+                        Compact, 'launch monitor' style view of dispersion for the top recommendations.
+                        Uses smooth ellipses instead of random dots, with a horizontal line at the
+                        plays-like yardage.
+                        """
+                        if not recommendations:
                             return
 
-                        rec_df["label"] = (
-                            rec_df["club"]
-                            + " "
-                            + rec_df["shot_type"].str.replace("Full", "").str.strip()
-                        )
+                        # Take the top 4 options to avoid clutter
+                        top = recommendations[:4]
 
                         charts = []
-                        for _, row in rec_df.iterrows():
-                            center_y = row["total"]
-                            sigma_lat = sge.get_lateral_sigma(row["category"]) * skill_factor
-                            sigma_dep = sge.get_dispersion_sigma(row["category"]) * skill_factor
+                        for shot in top:
+                            center_y = shot["total"]          # total distance in yards
+                            cat = shot.get("category", "mid_iron")
 
-                            theta = np.linspace(0, 2 * np.pi, 120)
-                            x = sigma_lat * 2.0 * np.cos(theta)
-                            y = sigma_dep * 2.0 * np.sin(theta) + center_y
-                            ellipse_df = pd.DataFrame({"x": x, "y": y})
+        # Depth & lateral sigmas from engine helpers
+                            sigma_depth = sge.get_dispersion_sigma(cat) * skill_factor
+                            sigma_lat = sge.get_lateral_sigma(cat) * skill_factor
 
-                            ellipse = (
+        # Build a parametric ellipse
+                            theta = np.linspace(0, 2 * np.pi, 200)
+                            ellipse_df = pd.DataFrame({
+                                "x": sigma_lat * np.cos(theta),
+                                "y": center_y + sigma_depth * np.sin(theta),
+                            })
+
+                            center_df = pd.DataFrame({"x": [0.0], "y": [center_y]})
+                            pin_line_df = pd.DataFrame({"y": [plays_like_yards]})
+
+                            ellipse_fill = (
                                 alt.Chart(ellipse_df)
                                 .mark_area(
                                     opacity=0.22,
-                                    strokeWidth=2,
+                                    color="#3498db",
                                 )
+                                .encode(
+                                    x=alt.X("x:Q", scale=alt.Scale(domain=[-30, 30]), axis=None),
+                                    y=alt.Y(
+                                        "y:Q",
+                                        scale=alt.Scale(
+                                            domain=[plays_like_yards - 40, plays_like_yards + 40]
+                                        ),
+                                        axis=None,
+                                    ),
+                                )
+                            )
+
+                            ellipse_outline = (
+                                alt.Chart(ellipse_df)
+                                .mark_line(color="#5dade2", strokeWidth=2)
                                 .encode(x="x:Q", y="y:Q")
                             )
 
-                            pin_rule = (
-                                alt.Chart(pd.DataFrame({"y": [plays_like]}))
-                                .mark_rule(strokeDash=[6, 4])
+                            pin_line = (
+                                alt.Chart(pin_line_df)
+                                .mark_rule(color="#ecf0f1", strokeDash=[6, 4], strokeWidth=2)
                                 .encode(y="y:Q")
                             )
 
-                            text = (
-                                alt.Chart(
-                                    pd.DataFrame(
-                                        {
-                                            "x": [0],
-                                            "y": [center_y + sigma_dep * 2 + 6],
-                                            "text": [
-                                                f"{row['label']} | SG {row['sg']:+.2f}"
-                                            ],
-                                        }
-                                    )
+                            center_point = (
+                                alt.Chart(center_df)
+                                .mark_point(size=40, color="white")
+                                .encode(x="x:Q", y="y:Q")
+                            )
+
+                            title = f"{shot['club']} — {shot['shot_type']}"
+                            subtitle = f"Total ≈ {shot['total']:.0f} • SG {shot['sg']:+.2f}"
+
+                            chart = (
+                                alt.layer(ellipse_fill, ellipse_outline, pin_line, center_point)
+                                .properties(
+                                    width=160,
+                                    height=240,
+                                    title=alt.TitleParams(
+                                        title,
+                                        subtitle=subtitle,
+                                        fontSize=13,
+                                        anchor="middle",
+                                    ),
                                 )
-                                .mark_text(align="center", fontSize=11)
-                                .encode(x="x:Q", y="y:Q", text="text:N")
+                                .configure_view(stroke=None, fill="#05070b")
+                                .configure_title(color="#f5f5f5")
                             )
 
-                            ch = (
-                                ellipse
-                                + pin_rule
-                                + text
-                            ).properties(width=140, height=220)
-                            charts.append(ch)
+                            charts.append(chart)
 
-                        if charts:
-                            st.markdown("### Shot Windows vs Plays-Like")
-                            st.altair_chart(
-                                alt.hconcat(*charts, spacing=10),
-                                use_container_width=True,
-                            )
+                        combo = alt.hconcat(*charts, spacing=16)
+                        st.markdown("### Shot Windows vs Plays-Like")
+                        st.altair_chart(combo, use_container_width=True)
 
                     # 3.3 Green overview map
-                    def draw_green_overview(short_trouble, long_trouble, left_trouble, right_trouble,
-                                            pin_location, strategy_label: str = "Balanced"):
+                    def draw_green_overview(short_trouble, long_trouble,
+                        left_trouble, right_trouble,
+                        pin_location, strategy_label: str = "Balanced"):
                         """
-                        Simple 2D green overview with trouble zones and pin position.
-                        Uses only safe Altair patterns (no positional encodings).
+                        Clean aerial-style green overview with trouble zones and pin position.
                         """
-
                         trouble_height_map = {"None": 0, "Mild": 8, "Severe": 14}
 
-    # --- Base green rectangle ---
-                        green_df = pd.DataFrame(
-                            {"x": [-15], "x2": [15], "y": [0], "y2": [30]}
-                        )
+    # Base green rectangle
+                        green_df = pd.DataFrame({"x": [-15], "x2": [15], "y": [0], "y2": [30]})
                         green = (
                             alt.Chart(green_df)
-                            .mark_rect(fill="#90EE90", stroke="darkgreen", strokeWidth=3)
+                            .mark_rect(fill="#6abf69", stroke="#1e7e34", strokeWidth=3, cornerRadius=6)
                             .encode(
                                 x=alt.X("x:Q", scale=alt.Scale(domain=[-25, 25]), axis=None),
                                 x2="x2:Q",
-                                y=alt.Y("y:Q", scale=alt.Scale(domain=[-10, 40]), axis=None),
+                                y=alt.Y("y:Q", scale=alt.Scale(domain=[-12, 42]), axis=None),
                                 y2="y2:Q",
                             )
                         )
 
                         layers = [green]
 
-    # --- Short trouble (below green) ---
+    # Short trouble (approach coming from bottom)
                         h_short = trouble_height_map.get(short_trouble, 0)
                         if h_short > 0:
-                            short_df = pd.DataFrame(
-                                {"x": [-20], "x2": [20], "y": [-h_short], "y2": [0]}
-                            )
+                            short_df = pd.DataFrame({"x": [-22], "x2": [22], "y": [-h_short], "y2": [0]})
                             short_zone = (
                                 alt.Chart(short_df)
-                                .mark_rect(fill="#ff9999", opacity=0.45)
+                                .mark_rect(fill="#c0392b", opacity=0.35)
                                 .encode(x="x:Q", x2="x2:Q", y="y:Q", y2="y2:Q")
                             )
                             layers.append(short_zone)
 
-    # --- Long trouble (above green) ---
+    # Long trouble (over the green)
                         h_long = trouble_height_map.get(long_trouble, 0)
                         if h_long > 0:
-                            long_df = pd.DataFrame(
-                                {"x": [-20], "x2": [20], "y": [30], "y2": [30 + h_long]}
-                            )
+                            long_df = pd.DataFrame({"x": [-22], "x2": [22], "y": [30], "y2": [30 + h_long]})
                             long_zone = (
                                 alt.Chart(long_df)
-                                .mark_rect(fill="#ff9999", opacity=0.45)
+                                .mark_rect(fill="#c0392b", opacity=0.35)
                                 .encode(x="x:Q", x2="x2:Q", y="y:Q", y2="y2:Q")
                             )
                             layers.append(long_zone)
 
-    # --- Left trouble ---
-                        h_side = trouble_height_map.get(left_trouble, 0)
-                        if h_side > 0:
+    # Left trouble
+                        h_left = trouble_height_map.get(left_trouble, 0)
+                        if h_left > 0:
                             left_df = pd.DataFrame(
-                                {"x": [-15 - h_side], "x2": [-15], "y": [-10], "y2": [40]}
+                                {"x": [-15 - h_left], "x2": [-15], "y": [-10], "y2": [40]}
                             )
                             left_zone = (
                                 alt.Chart(left_df)
-                                .mark_rect(fill="#ff9999", opacity=0.45)
+                                .mark_rect(fill="#c0392b", opacity=0.35)
                                 .encode(x="x:Q", x2="x2:Q", y="y:Q", y2="y2:Q")
                             )
                             layers.append(left_zone)
 
-    # --- Right trouble ---
-                        h_side_r = trouble_height_map.get(right_trouble, 0)
-                        if h_side_r > 0:
+    # Right trouble
+                        h_right = trouble_height_map.get(right_trouble, 0)
+                        if h_right > 0:
                             right_df = pd.DataFrame(
-                                {"x": [15], "x2": [15 + h_side_r], "y": [-10], "y2": [40]}
+                                {"x": [15], "x2": [15 + h_right], "y": [-10], "y2": [40]}
                             )
                             right_zone = (
                                 alt.Chart(right_df)
-                                .mark_rect(fill="#ff9999", opacity=0.45)
+                                .mark_rect(fill="#c0392b", opacity=0.35)
                                 .encode(x="x:Q", x2="x2:Q", y="y:Q", y2="y2:Q")
                             )
                             layers.append(right_zone)
 
-    # --- Pin position ---
+    # Pin position
                         pin_y_map = {"Front": 7, "Middle": 15, "Back": 23}
                         pin_y = pin_y_map.get(pin_location, 15)
-
                         pin_df = pd.DataFrame({"x": [0], "y": [pin_y]})
+
                         pin = (
                             alt.Chart(pin_df)
-                            .mark_circle(size=180, color="black", stroke="white", strokeWidth=2)
+                            .mark_point(size=180, color="#2c3e50", filled=True)
                             .encode(x="x:Q", y="y:Q")
                         )
                         layers.append(pin)
@@ -719,22 +737,28 @@ with tab_play:
                         final_chart = (
                             alt.layer(*layers)
                             .properties(
-                                width=420,
-                                height=260,
+                                width=520,
+                                height=220,
                                 title=alt.TitleParams(
                                     "Green Overview",
                                     subtitle=f"Pin: {pin_location} • Strategy: {strategy_label}",
+                                    fontSize=16,
+                                    anchor="middle",
                                 ),
                             )
-                            .configure_view(strokeWidth=0)
+                            .configure_view(stroke=None, fill="#05070b")
+                            .configure_title(color="#f5f5f5")
                         )
 
+                        st.markdown("### Green Overview")
                         st.altair_chart(final_chart, use_container_width=True)
 
 
+
                     # ---- actually draw them ----
+                    st.markdown("---")
                     draw_plays_like_gauge(target_pin, target_final)
-                    draw_top5_grid(ranked, target_final)
+                    draw_shot_windows(ranked, target_final, skill_factor=skill_factor)
                     draw_green_overview(
                         trouble_short_label,
                         trouble_long_label,
