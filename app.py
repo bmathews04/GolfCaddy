@@ -626,75 +626,111 @@ with tab_play:
                             )
 
                     # 3.3 Green overview map
-                    def draw_green_overview(short, long_t, left, right, pin_loc, strategy):
-                        trouble_map = {"None": 0, "Mild": 8, "Severe": 16}
-                        s = trouble_map[short]
-                        l = trouble_map[long_t]
-                        side = max(trouble_map[left], trouble_map[right])
+                    def draw_green_overview(short_trouble, long_trouble, left_trouble, right_trouble,
+                                            pin_location, strategy_label: str = "Balanced"):
+    """
+    Simple 2D green overview with trouble zones and pin position.
+    Uses only safe Altair patterns (no positional encodings).
+    """
 
-                        # green rectangle
-                        green = pd.DataFrame(
-                            {"x": [-15, 15, 15, -15], "y": [0, 0, 35, 35]}
+                        trouble_height_map = {"None": 0, "Mild": 8, "Severe": 14}
+
+    # --- Base green rectangle ---
+                        green_df = pd.DataFrame(
+                            {"x": [-15], "x2": [15], "y": [0], "y2": [30]}
                         )
-                        base = (
-                            alt.Chart(green)
+                        green = (
+                            alt.Chart(green_df)
                             .mark_rect(fill="#90EE90", stroke="darkgreen", strokeWidth=3)
-                            .encode(x="x:Q", y="y:Q")
+                            .encode(
+                                x=alt.X("x:Q", scale=alt.Scale(domain=[-25, 25]), axis=None),
+                                x2="x2:Q",
+                                y=alt.Y("y:Q", scale=alt.Scale(domain=[-10, 40]), axis=None),
+                                y2="y2:Q",
+                            )
                         )
 
-                        overlays = base
-                        if s:
-                            overlays += alt.Chart(
-                                pd.DataFrame(
-                                    {"x": [-20, 20, 20, -20], "y": [-s, -s, 0, 0]}
-                                )
-                            ).mark_rect(fill="#ff9999", opacity=0.4).encode("x", "y")
-                        if l:
-                            overlays += alt.Chart(
-                                pd.DataFrame(
-                                    {"x": [-20, 20, 20, -20], "y": [35, 35, 35 + l, 35 + l]}
-                                )
-                            ).mark_rect(fill="#ff9999", opacity=0.4).encode("x", "y")
-                        if side and left != "None":
-                            overlays += alt.Chart(
-                                pd.DataFrame(
-                                    {
-                                        "x": [-15 - side, -15, -15, -15 - side],
-                                        "y": [-10, -10, 45, 45],
-                                    }
-                                )
-                            ).mark_rect(fill="#ff9999", opacity=0.4).encode("x", "y")
-                        if side and right != "None":
-                            overlays += alt.Chart(
-                                pd.DataFrame(
-                                    {
-                                        "x": [15, 15 + side, 15 + side, 15],
-                                        "y": [-10, -10, 45, 45],
-                                    }
-                                )
-                            ).mark_rect(fill="#ff9999", opacity=0.4).encode("x", "y")
+                        layers = [green]
 
-                        pin_y = {"Front": 9, "Middle": 18, "Back": 27}[pin_loc]
+    # --- Short trouble (below green) ---
+                        h_short = trouble_height_map.get(short_trouble, 0)
+                        if h_short > 0:
+                            short_df = pd.DataFrame(
+                                {"x": [-20], "x2": [20], "y": [-h_short], "y2": [0]}
+                            )
+                            short_zone = (
+                                alt.Chart(short_df)
+                                .mark_rect(fill="#ff9999", opacity=0.45)
+                                .encode(x="x:Q", x2="x2:Q", y="y:Q", y2="y2:Q")
+                            )
+                            layers.append(short_zone)
+
+    # --- Long trouble (above green) ---
+                        h_long = trouble_height_map.get(long_trouble, 0)
+                        if h_long > 0:
+                            long_df = pd.DataFrame(
+                                {"x": [-20], "x2": [20], "y": [30], "y2": [30 + h_long]}
+                            )
+                            long_zone = (
+                                alt.Chart(long_df)
+                                .mark_rect(fill="#ff9999", opacity=0.45)
+                                .encode(x="x:Q", x2="x2:Q", y="y:Q", y2="y2:Q")
+                            )
+                            layers.append(long_zone)
+
+    # --- Left trouble ---
+                        h_side = trouble_height_map.get(left_trouble, 0)
+                        if h_side > 0:
+                            left_df = pd.DataFrame(
+                                {"x": [-15 - h_side], "x2": [-15], "y": [-10], "y2": [40]}
+                            )
+                            left_zone = (
+                                alt.Chart(left_df)
+                                .mark_rect(fill="#ff9999", opacity=0.45)
+                                .encode(x="x:Q", x2="x2:Q", y="y:Q", y2="y2:Q")
+                            )
+                            layers.append(left_zone)
+
+    # --- Right trouble ---
+                        h_side_r = trouble_height_map.get(right_trouble, 0)
+                        if h_side_r > 0:
+                            right_df = pd.DataFrame(
+                                {"x": [15], "x2": [15 + h_side_r], "y": [-10], "y2": [40]}
+                            )
+                            right_zone = (
+                                alt.Chart(right_df)
+                                .mark_rect(fill="#ff9999", opacity=0.45)
+                                .encode(x="x:Q", x2="x2:Q", y="y:Q", y2="y2:Q")
+                            )
+                            layers.append(right_zone)
+
+    # --- Pin position ---
+                        pin_y_map = {"Front": 7, "Middle": 15, "Back": 23}
+                        pin_y = pin_y_map.get(pin_location, 15)
+
+                        pin_df = pd.DataFrame({"x": [0], "y": [pin_y]})
                         pin = (
-                            alt.Chart(pd.DataFrame({"x": [0], "y": [pin_y]}))
-                            .mark_circle(size=160, color="black")
+                            alt.Chart(pin_df)
+                            .mark_circle(size=180, color="black", stroke="white", strokeWidth=2)
                             .encode(x="x:Q", y="y:Q")
                         )
+                        layers.append(pin)
 
-                        final = (
-                            overlays
-                            + pin
-                        ).properties(
-                            width=420,
-                            height=260,
-                            title=alt.TitleParams(
-                                "Green Overview",
-                                subtitle=f"Pin: {pin_loc} • Strategy: {strategy}",
-                            ),
+                        final_chart = (
+                            alt.layer(*layers)
+                            .properties(
+                                width=420,
+                                height=260,
+                                title=alt.TitleParams(
+                                    "Green Overview",
+                                    subtitle=f"Pin: {pin_location} • Strategy: {strategy_label}",
+                                ),
+                            )
+                            .configure_view(strokeWidth=0)
                         )
 
-                        st.markdown("### Green Overview")
-                        st.altair_chart(final, use_container_width=True)
+                        st.altair_chart(final_chart, use_container_width=True)
+
 
                     # ---- actually draw them ----
                     draw_plays_like_gauge(target_pin, target_final)
@@ -705,7 +741,7 @@ with tab_play:
                         left_trouble_label,
                         right_trouble_label,
                         pin_location,
-                        strategy_label,
+                        strategy_label=strategy_label,
                     )
  
 
