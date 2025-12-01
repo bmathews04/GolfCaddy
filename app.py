@@ -454,7 +454,6 @@ with tab_play:
                     long_trouble_label=trouble_long_label,
                     left_trouble_label=left_trouble_label,
                     right_trouble_label=right_trouble_label,
-                    strategy_label=strategy_label,
                     green_firmness_label=green_firmness_label,
                     strategy_label=strategy_label,
                     start_distance_yards=target_pin,
