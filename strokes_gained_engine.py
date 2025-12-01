@@ -348,6 +348,37 @@ def _expected_strokes_from_distance(distance_yards):
         return 2.5 + 0.0056 * d
     return 3.0 + 0.0045 * d
 
+def expected_strokes(distance_yards, surface="fairway", handicap_factor=1.0):
+    """
+    Handicap + lie aware expected-strokes model.
+
+    - distance_yards: remaining distance to the hole
+    - surface: 'tee', 'fairway', 'rough', 'sand', 'recovery', 'green', ...
+    - handicap_factor:
+        < 1.0  -> stronger player baseline
+        = 1.0  -> neutral baseline
+        > 1.0  -> higher-handicap baseline
+    """
+    dist = max(1.0, distance_yards)
+    base = _expected_strokes_from_distance(dist)
+
+    s = (surface or "fairway").lower()
+    if s in ("tee", "fairway"):
+        surface_mult = 1.0
+    elif s == "rough":
+        surface_mult = 1.06
+    elif s in ("sand", "bunker"):
+        surface_mult = 1.12
+    elif s in ("recovery", "trees", "punch"):
+        surface_mult = 1.20
+    elif s == "green":
+        surface_mult = 0.80
+    else:
+        surface_mult = 1.0
+
+    # Handicap factor scales difficulty up or down
+    return base * surface_mult * handicap_factor
+
 
 def _trouble_factor(label):
     l = (label or "none").lower()
@@ -483,10 +514,30 @@ def recommend_shots_with_sg(
     top_n=5,
     sg_profile_factor=1.0,
 ):
+    """
+    Rank candidate shots by strokes-gained style value using a more realistic baseline:
+
+      - Baseline = expected_strokes(start_distance, start_surface, handicap_factor)
+      - For each shot:
+          * We approximate remaining distance by |shot.total - target_total|
+          * Compute expected_strokes for that leave from a fairway-like surface
+          * Inflate that leave if short/long trouble is present in the miss direction
+          * Total exp strokes = 1 (this shot) + leave_exp
+          * SG = baseline - total_exp
+
+    This is still an approximation but much closer to true SG logic:
+      'How many strokes does this choice cost vs my baseline from here?'
+    """
     if start_distance_yards is None:
         start_distance_yards = target_total
 
-    baseline = _expected_strokes_from_distance(start_distance_yards) / sg_profile_factor
+    # Baseline SG from current position
+    baseline = expected_strokes(
+        distance_yards=start_distance_yards,
+        surface=start_surface,
+        handicap_factor=sg_profile_factor,
+    )
+
     sf = _strategy_multiplier(strategy_label)
     short_factor = _trouble_factor(short_trouble_label)
     long_factor = _trouble_factor(long_trouble_label)
@@ -495,37 +546,59 @@ def recommend_shots_with_sg(
 
     for shot in candidates:
         total = shot["total"]
-        diff = total - target_total
+        diff = total - target_total        # + = long, - = short
         abs_diff = abs(diff)
 
+        # Depth dispersion for this club category
         sigma_depth = get_dispersion_sigma(shot["category"]) * skill_factor
         p_close = _normal_cdf(5.0, diff, sigma_depth) - _normal_cdf(
             -5.0, diff, sigma_depth
         )
 
-        if diff < 0:
-            miss_penalty = short_factor
-        else:
-            miss_penalty = long_factor
+        # Approximate remaining distance after the shot
+        leave_distance = max(1.0, abs_diff)
 
-        expected_from_leave = _expected_strokes_from_distance(max(20.0, abs_diff))
-        # Very simple expected strokes model
-        exp_strokes = baseline + (abs_diff / 50.0) * miss_penalty * sf
+        # Assume we are around the green complex / fairway-type surface
+        leave_surface = "fairway"
+
+        # Base expected strokes from that remaining distance
+        leave_exp = expected_strokes(
+            distance_yards=leave_distance,
+            surface=leave_surface,
+            handicap_factor=sg_profile_factor,
+        )
+
+        # Directional trouble multipliers
+        trouble_mult = 1.0
+        if diff < 0:  # finishes short
+            trouble_mult *= short_factor
+        elif diff > 0:  # finishes long
+            trouble_mult *= long_factor
+
+        # Strategy multiplier (aggressive vs conservative)
+        leave_exp *= trouble_mult * sf
+
+        # Total expected score from this decision:
+        #   1 stroke for this shot + expected from leave
+        exp_strokes = 1.0 + leave_exp
 
         sg = baseline - exp_strokes
 
+        # ---- Reason text ---- #
         reason_parts = []
         if abs_diff <= 5:
             reason_parts.append("Distances match the plays-like yardage closely.")
         else:
             reason_parts.append("Distances are reasonably close to the plays-like yardage.")
-        if miss_penalty > 1.0:
+
+        if trouble_mult > 1.0:
             if diff < 0 and short_trouble_label.lower() != "none":
                 reason_parts.append("Short misses are penal here; being short is risky.")
             elif diff > 0 and long_trouble_label.lower() != "none":
                 reason_parts.append("Long misses are penal here; being long is risky.")
+
         if sg > 0.2:
-            reason_parts.append("Strong strokes-gained style profile vs a typical shot.")
+            reason_parts.append("Strong strokes-gained style profile vs your baseline.")
         elif sg < -0.2:
             reason_parts.append("Weaker strokes-gained style profile; consider safer options.")
         else:
@@ -545,7 +618,6 @@ def recommend_shots_with_sg(
 
     results.sort(key=lambda s: (-s["sg"], abs(s["diff"])))
     return results[:top_n]
-
 
 def compute_optimal_carry_for_target(target_total, category):
     """Simple category-based 'ideal carry' offset."""
@@ -636,6 +708,14 @@ def par4_strategy(
     tee_right_trouble_label="None",
     sg_profile_factor=1.0,
 ):
+    """
+    Choose best tee club on a par 4 using:
+
+      - Tee club total distance (from full_bag)
+      - Fairway width -> miss probability
+      - Trouble left/right -> penalty severity
+      - expected_strokes(distance, surface, handicap_factor) as baseline
+    """
     fw = (fairway_width_label or "Medium").lower()
     if fw == "narrow":
         base_miss = 0.35
@@ -644,13 +724,15 @@ def par4_strategy(
     else:
         base_miss = 0.28
 
-    def exp_strokes(d):
-        return _expected_strokes_from_distance(d)
+    def exp_strokes(d, surface="fairway"):
+        return expected_strokes(d, surface=surface, handicap_factor=sg_profile_factor)
 
     def trouble_mult(label):
         return _trouble_factor(label)
 
     options = []
+
+    # Consider realistic tee clubs only
     for row in full_bag:
         club = row["Club"]
         if club not in ("Driver", "3W", "3H", "4i", "5i", "6i"):
@@ -659,6 +741,7 @@ def par4_strategy(
         total = row["Total (yds)"]
         remaining = max(10.0, hole_yards - total)
 
+        # Dispersion on tee shot: longer clubs = wider pattern
         if club == "Driver":
             tee_sigma = 22.0 * skill_factor
         elif club in ("3W", "3H"):
@@ -668,12 +751,21 @@ def par4_strategy(
 
         miss_prob = min(0.6, base_miss * (tee_sigma / 18.0))
 
-        approach = exp_strokes(remaining)
+        # Expected strokes for the approach (from fairway distance 'remaining')
+        approach = exp_strokes(remaining, surface="fairway")
+
+        # Tee trouble multiplier (if you miss left/right into something bad)
         t_mult = max(trouble_mult(tee_left_trouble_label),
                      trouble_mult(tee_right_trouble_label))
+
+        # Only the miss-prob portion gets penalized
         approach *= 1.0 + miss_prob * (t_mult - 1.0)
 
-        expected_score = 1.0 + approach  # tee + rest
+        # Total expected score from tee:
+        #   1 stroke for tee shot + approach expectation
+        expected_score = 1.0 + approach
+
+        # Rough baseline par-4 scoring for reference; does not affect ranking
         baseline_score = 4.2
         sg_vs_baseline = baseline_score - expected_score
 
@@ -695,7 +787,6 @@ def par4_strategy(
     best = options[0]
     return {"best": best, "options": options}
 
-
 def par5_strategy(
     hole_yards,
     full_bag,
@@ -705,6 +796,16 @@ def par5_strategy(
     tee_right_trouble_label="None",
     sg_profile_factor=1.0,
 ):
+    """
+    Simple par-5 logic:
+
+      1) Choose best tee club using par4_strategy logic.
+      2) Given remaining distance, compare:
+           - Layup to ~100 yards (three-shot plan)
+           - Go for it in two (if remaining <= ~260)
+
+      Uses expected_strokes(...) for both legs.
+    """
     par4_res = par4_strategy(
         hole_yards=hole_yards,
         full_bag=full_bag,
@@ -728,21 +829,25 @@ def par5_strategy(
 
     remaining = best_tee["remaining_yards"]
 
-    def exp_strokes(d):
-        return _expected_strokes_from_distance(d)
+    def exp_strokes(d, surface="fairway"):
+        return expected_strokes(d, surface=surface, handicap_factor=sg_profile_factor)
 
+    # Three-shot (layup) plan
     layup_target = 100.0
     layup_dist = max(0.0, remaining - layup_target)
-    layup_approach = exp_strokes(layup_dist)
-    wedge_approach = exp_strokes(layup_target)
-    layup_score = 1.0 + layup_approach + wedge_approach  # tee + layup + wedge
+    layup_approach = exp_strokes(layup_dist, surface="fairway")
+    wedge_approach = exp_strokes(layup_target, surface="fairway")
+    layup_score = 1.0 + layup_approach + wedge_approach  # many approximations here
 
+    # Two-shot (go-for-it) plan, only if reachable
     go_for_it_score = None
     if remaining <= 260:
-        go_approach = exp_strokes(remaining)
-        go_for_it_score = 1.0 + go_approach  # tee + long shot
+        go_approach = exp_strokes(remaining, surface="fairway")
+        go_for_it_score = 1.0 + go_approach
 
+    # Rough baseline par-5 scoring for reference
     baseline_score = 5.2
+
     if go_for_it_score is None or layup_score + 0.05 < go_for_it_score:
         strategy = "Three-shot (layup) plan"
         expected_score = layup_score
@@ -759,6 +864,7 @@ def par5_strategy(
         "layup_target": layup_target,
         "go_for_it_score": go_for_it_score,
     }
+
 
 
 # ============================================================
