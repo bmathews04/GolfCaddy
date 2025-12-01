@@ -277,6 +277,12 @@ with tab_play:
         # Safe defaults so we never get NameError later
         use_auto_strategy = True
         strategy_label = sge.STRATEGY_BALANCED
+        skill = st.session_state.get("skill", "Intermediate")
+        tendency = st.session_state.get("tendency", "Neutral")
+        trouble_short_label = "None"
+        trouble_long_label = "None"
+        green_firmness_label = "Medium"
+
 
         # Core inputs
         pin_col1, pin_col2 = st.columns([2, 1])
@@ -347,33 +353,33 @@ with tab_play:
 
         # Advanced-only extras
         if mode == "Advanced":
-            with st.expander("Advanced: Green, Trouble & Strategy"):
-                st.subheader("Green & Trouble Setup")
+            with st.expander("Advanced: Trouble, Green, Tendencies (Optional)"):
+                st.subheader("**Trouble Short / Long & Green Firmness**")
                 col1, col2, col3 = st.columns(3)
                 trouble_short_label = col1.selectbox(
-                    "Short of green",
+                    "Trouble Short?",
                     ["None", "Mild", "Severe"],
                     index=0,
                 )
                 trouble_long_label = col2.selectbox(
-                    "Long of green",
+                    "Trouble Long?",
                     ["None", "Mild", "Severe"],
                     index=0,
                 )
                 left_trouble_label = col3.selectbox(
-                    "Left of green",
+                    "Trouble Left?",
                     ["None", "Mild", "Severe"],
                     index=0,
                 )
 
                 col4, col5, col6 = st.columns(3)
                 right_trouble_label = col4.selectbox(
-                    "Right of green",
+                    "Trouble Right?",
                     ["None", "Mild", "Severe"],
                     index=0,
                 )
                 pin_location = col5.selectbox(
-                    "Pin depth",
+                    "Pin Depth",
                     ["Front", "Middle", "Back"],
                     index=1,
                 )
@@ -395,6 +401,15 @@ with tab_play:
                     help="If you typically come up short or long, the target can be biased slightly.",
                 )
                 st.session_state.tendency = tendency
+
+                skill = st.radio(
+                    "Ball Striking Consistency",
+                    ["Recreational", "Intermediate", "Highly Consistent"],
+                    index=["Recreational", "Intermediate", "Highly Consistent"].index(skill),
+                    help="Used to scale dispersion windows and strokes-gained simulations.",
+                )
+                st.session_state.skill = skill
+        
         else:
         # Quick defaults
             trouble_short_label = "None"
@@ -404,7 +419,6 @@ with tab_play:
             pin_location = "Middle"
             strategy_label = sge.STRATEGY_BALANCED
             tendency = "Neutral"
-
 
         # Skill factor (used for SG and dispersion scaling)
         skill_norm = skill.lower()
