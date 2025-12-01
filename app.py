@@ -641,32 +641,40 @@ with tab_strategy:
                     f"(SG vs baseline ≈ {best['sg_vs_baseline']:.3f})."
                 )
 
-        else:  # Par 5
-            res = sge.par5_strategy(
-                hole_yards=hole_yards,
-                full_bag=full_bag,
-                skill_factor=skill_factor,
-                fairway_width_label=fairway_width_label,
-                tee_left_trouble_label=tee_left_trouble,
-                tee_right_trouble_label=tee_right_trouble,
-                sg_profile_factor=st.session_state.handicap_factor,
-            )
-            best_tee = res.get("best_tee")
-            if best_tee is None:
-                st.warning("No suitable Par 5 strategy found.")
-            else:
-                st.markdown(
-                    f"**Tee club:** {best_tee['tee_club']} "
-                    f"(Avg total ≈ {best_tee['avg_total']:.0f} yds, "
-                    f"remaining ≈ {res['remaining_after_tee']:.0f} yds)"
-                )
-                st.markdown(f"**Plan:** {res['strategy']}")
+        elif hole_type == "Par 5":
+    res = sge.par5_strategy(
+        hole_yards=hole_yards,
+        full_bag=full_bag,
+        skill_factor=skill_factor,
+        fairway_width_label=fairway_width,
+        tee_left_trouble_label=tee_left_trouble,
+        tee_right_trouble_label=tee_right_trouble,
+        sg_profile_factor=handicap_factor,
+    )
 
-                st.caption(f"""
-                Expected score ≈ {res['expected_score']:.2f}  
-                (Layup plan ≈ {res['layup_score']:.2f}, 
-                Go-for-it plan ≈ {res['go_for_it_score']:.2f} if available).
-                """)
+    best_tee = res.get("best_tee")
+    if not best_tee:
+        st.warning("No valid tee strategy found for this par 5.")
+    else:
+        st.markdown(
+            f"**Tee club:** {best_tee['tee_club']} "
+            f"(Avg total ≈ {best_tee['avg_total']:.0f} yds, "
+            f"remaining ≈ {best_tee['remaining_yards']:.0f} yds)"
+        )
+        st.markdown(f"**Plan:** {res['strategy']}")
+
+        go_for_it_score = res.get("go_for_it_score")
+        if isinstance(go_for_it_score, (int, float)):
+            go_for_it_text = f"{go_for_it_score:.2f}"
+        else:
+            go_for_it_text = "N/A"
+
+        st.caption(
+            f"Expected score ≈ {res['expected_score']:.2f} "
+            f"(Layup plan ≈ {res['layup_score']:.2f}, "
+            f"Go-for-it plan ≈ {go_for_it_text})."
+        )
+
 
 
 
