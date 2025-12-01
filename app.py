@@ -274,6 +274,9 @@ with tab_play:
                  "pin position, and tendencies in detail.",
         )
         st.session_state.mode = mode
+        # Safe defaults so we never get NameError later
+        use_auto_strategy = True
+        strategy_label = sge.STRATEGY_BALANCED
 
         # Core inputs
         pin_col1, pin_col2 = st.columns([2, 1])
@@ -322,18 +325,25 @@ with tab_play:
 
         with col_c:
             if mode == "Advanced":
-                st.markdown("**Player Profile**")
-                skill = st.radio(
-                    "Ball Striking Consistency",
-                    ["Recreational", "Intermediate", "Highly Consistent"],
-                    index=["Recreational", "Intermediate", "Highly Consistent"].index(
-                        st.session_state.skill
-                    ),
-                    help="Used to scale dispersion windows and strokes-gained simulations.",
+                st.markdown("**Strategy & Player Profile**")
+                use_auto_strategy = st.checkbox(
+                    "Auto-select strategy based on situation",
+                    value=True,
                 )
-                st.session_state.skill = skill
+                manual_strategy = st.radio(
+                    "Strategy (if not auto)",
+                    [sge.STRATEGY_BALANCED, sge.STRATEGY_CONSERVATIVE, sge.STRATEGY_AGGRESSIVE],
+                    index=0,
+                    help="Conservative favors safety, Aggressive chases pins, Balanced is in between.",
+                )
+                if not use_auto_strategy:
+                    strategy_label = manual_strategy
             else:
-                skill = "Intermediate"
+                st.markdown("**Strategy**")
+                st.caption(
+                    "Quick mode uses a balanced strategy with moderate risk/reward."
+                )
+
 
         # Advanced-only extras
         if mode == "Advanced":
