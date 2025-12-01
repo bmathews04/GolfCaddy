@@ -889,7 +889,7 @@ with tab_strategy:
                 hole_yards=hole_yards,
                 full_bag=full_bag,
                 skill_factor=skill_factor,
-                fairway_width_label=fairway_width_label,
+                fairway_width_label=fairway_width,
                 tee_left_trouble_label=tee_left_trouble,
                 tee_right_trouble_label=tee_right_trouble,
                 sg_profile_factor=st.session_state.handicap_factor,
@@ -913,7 +913,6 @@ with tab_strategy:
                 hole_yards=hole_yards,
                 full_bag=full_bag,
                 skill_factor=skill_factor,
-                
                 fairway_width_label=fairway_width,
                 tee_left_trouble_label=tee_left_trouble,
                 tee_right_trouble_label=tee_right_trouble,
