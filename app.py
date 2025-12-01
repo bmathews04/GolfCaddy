@@ -2,6 +2,8 @@ import math
 import streamlit as st
 import pandas as pd
 import numpy as np
+import altair as alt
+import plotly.graph_objects as go
 
 import strokes_gained_engine as sge  # <-- your engine module
 
@@ -320,46 +322,56 @@ with tab_play:
 
         with col_c:
             if mode == "Advanced":
-                st.markdown("**Strategy & Player Profile**")
-                use_auto_strategy = st.checkbox(
-                    "Auto-select strategy based on situation",
-                    value=True,
+                st.markdown("**Player Profile**")
+                skill = st.radio(
+                    "Ball Striking Consistency",
+                    ["Recreational", "Intermediate", "Highly Consistent"],
+                    index=["Recreational", "Intermediate", "Highly Consistent"].index(
+                        st.session_state.skill
+                    ),
+                    help="Used to scale dispersion windows and strokes-gained simulations.",
                 )
-                manual_strategy = st.radio(
-                    "Strategy (if not auto)",
-                    [sge.STRATEGY_BALANCED, sge.STRATEGY_CONSERVATIVE, sge.STRATEGY_AGGRESSIVE],
-                    index=0,
-                    help="Conservative favors safety, Aggressive chases pins, Balanced is in between.",
-                )
-                strategy_label = manual_strategy
+                st.session_state.skill = skill
             else:
-                use_auto_strategy = True
-                strategy_label = sge.STRATEGY_BALANCED
-                st.markdown("**Strategy**")
-                st.caption(
-                    "Quick mode uses a balanced strategy with moderate risk/reward."
-                )
+                skill = "Intermediate"
 
         # Advanced-only extras
         if mode == "Advanced":
-            with st.expander("Advanced: Trouble, Green, Tendencies (Optional)"):
-                st.markdown("**Trouble Short / Long & Green Firmness**")
-                tcol1, tcol2, tcol3 = st.columns(3)
-                with tcol1:
-                    trouble_short_label = st.selectbox(
-                        "Trouble Short?",
-                        ["None", "Mild", "Severe"],
-                    )
-                with tcol2:
-                    trouble_long_label = st.selectbox(
-                        "Trouble Long?",
-                        ["None", "Mild", "Severe"],
-                    )
-                with tcol3:
-                    green_firmness_label = st.selectbox(
-                        "Green Firmness",
-                        ["Soft", "Medium", "Firm"],
-                    )
+            with st.expander("Advanced: Green, Trouble & Strategy"):
+                st.subheader("Green & Trouble Setup")
+                col1, col2, col3 = st.columns(3)
+                trouble_short_label = col1.selectbox(
+                    "Short of green",
+                    ["None", "Mild", "Severe"],
+                    index=0,
+                )
+                trouble_long_label = col2.selectbox(
+                    "Long of green",
+                    ["None", "Mild", "Severe"],
+                    index=0,
+                )
+                left_trouble_label = col3.selectbox(
+                    "Left of green",
+                    ["None", "Mild", "Severe"],
+                    index=0,
+                )
+
+                col4, col5, col6 = st.columns(3)
+                right_trouble_label = col4.selectbox(
+                    "Right of green",
+                    ["None", "Mild", "Severe"],
+                    index=0,
+                )
+                pin_location = col5.selectbox(
+                    "Pin depth",
+                    ["Front", "Middle", "Back"],
+                    index=1,
+                )
+                strategy_label = col6.selectbox(
+                    "Strategy",
+                    [sge.STRATEGY_CONSERVATIVE, sge.STRATEGY_BALANCED, sge.STRATEGY_AGGRESSIVE],
+                    index=1,
+                )
 
                 st.markdown("---")
                 st.markdown("**Player Tendencies**")
@@ -373,24 +385,16 @@ with tab_play:
                     help="If you typically come up short or long, the target can be biased slightly.",
                 )
                 st.session_state.tendency = tendency
-
-                skill = st.radio(
-                    "Ball Striking Consistency",
-                    ["Recreational", "Intermediate", "Highly Consistent"],
-                    index=["Recreational", "Intermediate", "Highly Consistent"].index(
-                        st.session_state.skill
-                    ),
-                    help="Used to scale dispersion windows and strokes-gained simulations.",
-                )
-                st.session_state.skill = skill
-
         else:
-            # Quick defaults
+        # Quick defaults
             trouble_short_label = "None"
             trouble_long_label = "None"
-            green_firmness_label = "Medium"
+            left_trouble_label = "None"
+            right_trouble_label = "None"
+            pin_location = "Middle"
+            strategy_label = sge.STRATEGY_BALANCED
             tendency = "Neutral"
-            skill = "Intermediate"
+
 
         # Skill factor (used for SG and dispersion scaling)
         skill_norm = skill.lower()
@@ -448,8 +452,9 @@ with tab_play:
                     candidates=all_shots_base,
                     short_trouble_label=trouble_short_label,
                     long_trouble_label=trouble_long_label,
-                    left_trouble_label="None",
-                    right_trouble_label="None",
+                    left_trouble_label=left_trouble_label,
+                    right_trouble_label=right_trouble_label,
+                    strategy_label=strategy_label,
                     green_firmness_label=green_firmness_label,
                     strategy_label=strategy_label,
                     start_distance_yards=target_pin,
@@ -477,6 +482,209 @@ with tab_play:
                             f"SG ≈ {s['sg']:.3f})"
                         )
                         st.caption(s["reason"])
+                                       # --------------------------------------------------------
+                    # VISUAL PACK: Gauge + Top-5 grid + Green overview
+                    # --------------------------------------------------------
+
+                    # 3.1 Plays-like gauge
+                    def draw_plays_like_gauge(raw_yards, plays_like):
+                        delta = plays_like - raw_yards
+                        color = "red" if delta > 0 else "blue" if delta < 0 else "gray"
+
+                        fig = go.Figure(
+                            go.Indicator(
+                                mode="gauge+number+delta",
+                                value=plays_like,
+                                domain={"x": [0, 1], "y": [0, 1]},
+                                title={
+                                    "text": f"<b>Plays-Like: {plays_like:.0f} yards</b>",
+                                    "font": {"size": 20},
+                                },
+                                delta={
+                                    "reference": raw_yards,
+                                    "relative": False,
+                                    "position": "top",
+                                },
+                                gauge={
+                                    "axis": {
+                                        "range": [raw_yards - 40, raw_yards + 40],
+                                        "tickwidth": 2,
+                                    },
+                                    "bar": {"color": color},
+                                    "steps": [
+                                        {
+                                            "range": [raw_yards - 40, raw_yards],
+                                            "color": "lightcyan",
+                                        },
+                                        {
+                                            "range": [raw_yards, raw_yards + 40],
+                                            "color": "mistyrose",
+                                        },
+                                    ],
+                                    "threshold": {
+                                        "line": {"color": "red", "width": 4},
+                                        "thickness": 0.8,
+                                        "value": raw_yards,
+                                    },
+                                },
+                            )
+                        )
+                        fig.update_layout(
+                            height=280, margin=dict(t=60, b=10, l=10, r=10)
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    # 3.2 Top-5 dispersion “bands” in a row
+                    def draw_top5_grid(rec_list, plays_like):
+                        rec_df = pd.DataFrame(rec_list[:5])
+                        if rec_df.empty:
+                            return
+
+                        rec_df["label"] = (
+                            rec_df["club"]
+                            + " "
+                            + rec_df["shot_type"].str.replace("Full", "").str.strip()
+                        )
+
+                        charts = []
+                        for _, row in rec_df.iterrows():
+                            center_y = row["total"]
+                            sigma_lat = sge.get_lateral_sigma(row["category"]) * skill_factor
+                            sigma_dep = sge.get_dispersion_sigma(row["category"]) * skill_factor
+
+                            theta = np.linspace(0, 2 * np.pi, 120)
+                            x = sigma_lat * 2.0 * np.cos(theta)
+                            y = sigma_dep * 2.0 * np.sin(theta) + center_y
+                            ellipse_df = pd.DataFrame({"x": x, "y": y})
+
+                            ellipse = (
+                                alt.Chart(ellipse_df)
+                                .mark_area(
+                                    opacity=0.22,
+                                    strokeWidth=2,
+                                )
+                                .encode(x="x:Q", y="y:Q")
+                            )
+
+                            pin_rule = (
+                                alt.Chart(pd.DataFrame({"y": [plays_like]}))
+                                .mark_rule(strokeDash=[6, 4])
+                                .encode(y="y:Q")
+                            )
+
+                            text = (
+                                alt.Chart(
+                                    pd.DataFrame(
+                                        {
+                                            "x": [0],
+                                            "y": [center_y + sigma_dep * 2 + 6],
+                                            "text": [
+                                                f"{row['label']} | SG {row['sg']:+.2f}"
+                                            ],
+                                        }
+                                    )
+                                )
+                                .mark_text(align="center", fontSize=11)
+                                .encode(x="x:Q", y="y:Q", text="text:N")
+                            )
+
+                            ch = (
+                                ellipse
+                                + pin_rule
+                                + text
+                            ).properties(width=140, height=220)
+                            charts.append(ch)
+
+                        if charts:
+                            st.markdown("### Shot Windows vs Plays-Like")
+                            st.altair_chart(
+                                alt.hconcat(*charts, spacing=10),
+                                use_container_width=True,
+                            )
+
+                    # 3.3 Green overview map
+                    def draw_green_overview(short, long_t, left, right, pin_loc, strategy):
+                        trouble_map = {"None": 0, "Mild": 8, "Severe": 16}
+                        s = trouble_map[short]
+                        l = trouble_map[long_t]
+                        side = max(trouble_map[left], trouble_map[right])
+
+                        # green rectangle
+                        green = pd.DataFrame(
+                            {"x": [-15, 15, 15, -15], "y": [0, 0, 35, 35]}
+                        )
+                        base = (
+                            alt.Chart(green)
+                            .mark_rect(fill="#90EE90", stroke="darkgreen", strokeWidth=3)
+                            .encode(x="x:Q", y="y:Q")
+                        )
+
+                        overlays = base
+                        if s:
+                            overlays += alt.Chart(
+                                pd.DataFrame(
+                                    {"x": [-20, 20, 20, -20], "y": [-s, -s, 0, 0]}
+                                )
+                            ).mark_rect(fill="#ff9999", opacity=0.4).encode("x", "y")
+                        if l:
+                            overlays += alt.Chart(
+                                pd.DataFrame(
+                                    {"x": [-20, 20, 20, -20], "y": [35, 35, 35 + l, 35 + l]}
+                                )
+                            ).mark_rect(fill="#ff9999", opacity=0.4).encode("x", "y")
+                        if side and left != "None":
+                            overlays += alt.Chart(
+                                pd.DataFrame(
+                                    {
+                                        "x": [-15 - side, -15, -15, -15 - side],
+                                        "y": [-10, -10, 45, 45],
+                                    }
+                                )
+                            ).mark_rect(fill="#ff9999", opacity=0.4).encode("x", "y")
+                        if side and right != "None":
+                            overlays += alt.Chart(
+                                pd.DataFrame(
+                                    {
+                                        "x": [15, 15 + side, 15 + side, 15],
+                                        "y": [-10, -10, 45, 45],
+                                    }
+                                )
+                            ).mark_rect(fill="#ff9999", opacity=0.4).encode("x", "y")
+
+                        pin_y = {"Front": 9, "Middle": 18, "Back": 27}[pin_loc]
+                        pin = (
+                            alt.Chart(pd.DataFrame({"x": [0], "y": [pin_y]}))
+                            .mark_circle(size=160, color="black")
+                            .encode(x="x:Q", y="y:Q")
+                        )
+
+                        final = (
+                            overlays
+                            + pin
+                        ).properties(
+                            width=420,
+                            height=260,
+                            title=alt.TitleParams(
+                                "Green Overview",
+                                subtitle=f"Pin: {pin_loc} • Strategy: {strategy}",
+                            ),
+                        )
+
+                        st.markdown("### Green Overview")
+                        st.altair_chart(final, use_container_width=True)
+
+                    # ---- actually draw them ----
+                    draw_plays_like_gauge(target_pin, target_final)
+                    draw_top5_grid(ranked, target_final)
+                    draw_green_overview(
+                        trouble_short_label,
+                        trouble_long_label,
+                        left_trouble_label,
+                        right_trouble_label,
+                        pin_location,
+                        strategy_label,
+                    )
+ 
 
 # ============================================================
 # RANGE TAB
