@@ -580,7 +580,7 @@ with tab_strategy:
             step=1.0,
         )
     with col_s2:
-        fairway_width = st.selectionbox(
+        fairway_width = st.selectbox(
             "Fairway width (for tee shot)", 
             ["Narrow", "Medium", "Wide"],
             index=1,
