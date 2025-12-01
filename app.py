@@ -580,8 +580,8 @@ with tab_strategy:
             step=1.0,
         )
     with col_s2:
-        fairway_width_label = st.selectbox(
-            "Fairway width (for tee shot)",
+        fairway_width = st.selectionbox(
+            "Fairway width (for tee shot)", 
             ["Narrow", "Medium", "Wide"],
             index=1,
         )
@@ -646,6 +646,7 @@ with tab_strategy:
                 hole_yards=hole_yards,
                 full_bag=full_bag,
                 skill_factor=skill_factor,
+                
                 fairway_width_label=fairway_width,
                 tee_left_trouble_label=tee_left_trouble,
                 tee_right_trouble_label=tee_right_trouble,
