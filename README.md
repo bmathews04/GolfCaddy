@@ -1,6 +1,16 @@
 [![codecov](https://codecov.io/github/bmathews04/GolfShotSelector/branch/main/graph/badge.svg?token=NIDVNSLRM2)](https://codecov.io/github/bmathews04/GolfShotSelector)
 
 
+# GolfShotSelector ⛳
+
+Data-driven shot selector using strokes-gained math, dispersion, wind, elevation, lie, and strategy.
+
+[![Tests](https://github.com/bmathews04/GolfShotSelector/actions/workflows/test.yml/badge.svg)](https://github.com/bmathews04/GolfShotSelector/actions/workflows/test.yml)
+[![Coverage](https://codecov.io/gh/bmathews04/GolfShotSelector/branch/main/graph/badge.svg)](https://codecov.io/gh/bmathews04/GolfShotSelector)
+
+Live app → (we’ll deploy in 30 seconds)
+
+
 Overview
 
 Golf Caddy is a Streamlit-based decision-support tool designed to assist golfers in selecting optimal shots under varying playing conditions.
