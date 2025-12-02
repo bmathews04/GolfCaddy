@@ -6,5 +6,3 @@ Data-driven shot selector using strokes-gained math, dispersion, wind, elevation
 [![Coverage](https://codecov.io/gh/bmathews04/GolfShotSelector/branch/main/graph/badge.svg)](https://codecov.io/gh/bmathews04/GolfShotSelector)
 
 Live app → https://golf-caddy-bryanmathews.streamlit.app/
-
-https://codecov.io/github/bmathews04/GolfShotSelector/graphs/sunburst.svg?token=NIDVNSLRM2
