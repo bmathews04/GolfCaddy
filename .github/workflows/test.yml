@@ -27,11 +27,11 @@ jobs:
 
       - name: Run tests & generate coverage report
         run: |
-          python -m pytest --cov=strokes_gained_engine --cov-report=xml:coverage.xml \
-            --cov-config= \
-            --cov-exclude=tests/ \
-            --cov-exclude=app.py \
-            --cov-exclude=*__init__.py* \
+          python -m pytest \
+            --cov=strokes_gained_engine \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=90 \
             -v
         env:
           PYTHONPATH: ${{ github.workspace }}
