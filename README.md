@@ -1,4 +1,4 @@
-# GolfShotSelector ⛳
+# ⛳ Golf Caddy
 
 Data-driven shot selector using strokes-gained math, dispersion, wind, elevation, lie, and strategy.
 
