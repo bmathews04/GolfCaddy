@@ -7,9 +7,4 @@ Data-driven shot selector using strokes-gained math, dispersion, wind, elevation
 
 Live app → https://golf-caddy-bryanmathews.streamlit.app/
 
-[![codecov](https://codecov.io/github/bmathews04/GolfShotSelector/graph/badge.svg?token=NIDVNSLRM2)](https://codecov.io/github/bmathews04/GolfShotSelector)
-<a href="https://codecov.io/github/bmathews04/GolfShotSelector" > 
- <img src="https://codecov.io/github/bmathews04/GolfShotSelector/graph/badge.svg?token=NIDVNSLRM2"/> 
- </a>
- .. image:: https://codecov.io/github/bmathews04/GolfShotSelector/graph/badge.svg?token=NIDVNSLRM2 
- :target: https://codecov.io/github/bmathews04/GolfShotSelector
+https://codecov.io/github/bmathews04/GolfShotSelector/graphs/sunburst.svg?token=NIDVNSLRM2
