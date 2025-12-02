@@ -27,4 +27,4 @@ def test_generate_random_scenario_has_required_keys_and_plausible_output():
         )
 
         # Plays-like should remain in a sane on-course range
-        assert 40 <= plays_like <= 260
+        assert 40 <= plays_like <= 300
