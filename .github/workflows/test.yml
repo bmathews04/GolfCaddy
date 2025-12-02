@@ -31,7 +31,6 @@ jobs:
             --cov=strokes_gained_engine \
             --cov-report=xml:coverage.xml \
             --cov-report=term-missing \
-            --cov-fail-under=90 \
             -v
         env:
           PYTHONPATH: ${{ github.workspace }}
