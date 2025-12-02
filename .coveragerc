@@ -1,0 +1,8 @@
+[report]
+omit =
+    tests/*
+    app.py
+    __init__.py
+
+[xml]
+output = coverage.xml
