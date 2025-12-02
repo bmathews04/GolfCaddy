@@ -359,6 +359,73 @@ def lie_dispersion_factor(surface: str) -> float:
     # Fallback
     return 1.0
 
+def lie_distance_factor(surface: str, category: str) -> float:
+    """
+    How much the starting surface shortens carry/total distance.
+
+    - tee / fairway / good lie -> 1.00 (no change)
+    - light rough / first cut / "ok" -> a few % shorter
+    - rough / bad / recovery -> noticeably shorter, esp. with long clubs
+    - sand / bunker -> big penalty for long clubs, smaller for wedges
+    """
+    s = (surface or "").lower().strip()
+    c = (category or "").lower().strip()
+
+    if s in ("tee", "fairway", "good"):
+        return 1.0
+
+    # Light rough / first cut
+    if s in ("first cut", "light rough", "ok"):
+        if c in ("driver", "wood", "hybrid", "long_iron"):
+            return 0.96
+        if c in ("mid_iron", "short_iron"):
+            return 0.97
+        return 0.98  # wedges
+
+    # Rough / deep rough / recovery
+    if s in ("rough", "deep rough", "bad", "recovery", "trees"):
+        if c in ("driver", "wood", "hybrid", "long_iron"):
+            return 0.90
+        if c in ("mid_iron", "short_iron"):
+            return 0.92
+        return 0.94  # wedges
+
+    # Sand / bunker
+    if s in ("sand", "bunker"):
+        if c in ("driver", "wood", "hybrid", "long_iron"):
+            return 0.85
+        if c in ("mid_iron", "short_iron"):
+            return 0.88
+        return 0.92  # wedges
+
+    return 1.0
+
+def green_firmness_roll_adjust(category: str, firmness_label: str) -> float:
+    """
+    Small additive tweak (in yards) to TOTAL distance based on green firmness.
+
+    Positive -> more rollout (firm)
+    Negative -> less rollout (soft)
+    """
+    label = (firmness_label or "Medium").lower().strip()
+    if label == "soft":
+        base = -3.0
+    elif label == "firm":
+        base = 3.0
+    else:
+        base = 0.0  # Medium
+
+    c = (category or "").lower().strip()
+    if c in ("driver", "wood", "hybrid"):
+        mult = 1.0      # big effect for long clubs
+    elif c in ("long_iron", "mid_iron"):
+        mult = 0.7
+    elif c in ("short_iron", "scoring_wedge"):
+        mult = 0.4      # wedges spin/stop more
+    else:
+        mult = 0.5
+
+    return base * mult
 
 def _expected_strokes_from_distance(distance_yards):
     """Rough strokes baseline for amateurs; used only for relative SG."""
@@ -564,48 +631,124 @@ def recommend_shots_with_sg(
     sf = _strategy_multiplier(strategy_label)
     short_factor = _trouble_factor(short_trouble_label)
     long_factor = _trouble_factor(long_trouble_label)
+    left_factor = _trouble_factor(left_trouble_label)
+    right_factor = _trouble_factor(right_trouble_label)
+    
+    results = []
+
+def recommend_shots_with_sg(
+    target_total,
+    candidates,
+    short_trouble_label="None",
+    long_trouble_label="None",
+    left_trouble_label="None",
+    right_trouble_label="None",
+    green_firmness_label="Medium",
+    strategy_label=STRATEGY_BALANCED,
+    start_distance_yards=None,
+    start_surface="fairway",
+    front_yards=0.0,
+    back_yards=0.0,
+    skill_factor=1.0,
+    pin_lateral_offset=0.0,
+    green_width=0.0,
+    n_sim=DEFAULT_N_SIM,
+    top_n=5,
+    sg_profile_factor=1.0,
+):
+    """
+    Rank candidate shots by strokes-gained style value using a more realistic baseline:
+
+      - Baseline = expected_strokes(start_distance, start_surface, handicap_factor)
+      - For each shot:
+          * Adjust total distance for lie (rough/sand) and green firmness.
+          * Approximate remaining distance by |effective_total - target_total|.
+          * Compute expected_strokes for that leave from a fairway-like surface.
+          * Inflate that leave if short/long AND left/right trouble are in play.
+          * Total exp strokes = 1 (this shot) + leave_exp.
+          * SG = baseline - total_exp.
+    """
+    if start_distance_yards is None:
+        start_distance_yards = target_total
+
+    # Baseline SG from current position
+    baseline = expected_strokes(
+        distance_yards=start_distance_yards,
+        surface=start_surface,
+        handicap_factor=sg_profile_factor,
+    )
+
+    sf = _strategy_multiplier(strategy_label)
+    short_factor = _trouble_factor(short_trouble_label)
+    long_factor = _trouble_factor(long_trouble_label)
+    left_factor = _trouble_factor(left_trouble_label)
+    right_factor = _trouble_factor(right_trouble_label)
 
     results = []
 
     for shot in candidates:
-        total = shot["total"]
-        diff = total - target_total        # + = long, - = short
+        cat = shot.get("category", "")
+        raw_total = shot["total"]
+
+        # --- 1) Distance effects: lie + green firmness ---
+        dist_mult = lie_distance_factor(start_surface, cat)
+        eff_total = raw_total * dist_mult
+
+        eff_total += green_firmness_roll_adjust(cat, green_firmness_label)
+
+        diff = eff_total - target_total          # + = long, - = short
         abs_diff = abs(diff)
 
-        # Depth dispersion for this club category
+        # --- 2) Depth dispersion & proximity ---
         lie_factor = lie_dispersion_factor(start_surface)
-        sigma_depth = get_dispersion_sigma(shot["category"]) * skill_factor * lie_factor
+        sigma_depth = get_dispersion_sigma(cat) * skill_factor * lie_factor
+
+        # Probability of finishing within ±5 yards in depth
         p_close = _normal_cdf(5.0, diff, sigma_depth) - _normal_cdf(
             -5.0, diff, sigma_depth
         )
 
-        # Approximate remaining distance after the shot
+        # Distance of next shot
         leave_distance = max(1.0, abs_diff)
-
-        # Assume we are around the green complex / fairway-type surface
         leave_surface = "fairway"
 
-        # Base expected strokes from that remaining distance
         leave_exp = expected_strokes(
             distance_yards=leave_distance,
             surface=leave_surface,
             handicap_factor=sg_profile_factor,
         )
 
-        # Directional trouble multipliers
-        trouble_mult = 1.0
-        if diff < 0:  # finishes short
-            trouble_mult *= short_factor
-        elif diff > 0:  # finishes long
-            trouble_mult *= long_factor
+        # --- 3) Short/long trouble multiplier (depth) ---
+        trouble_mult_depth = 1.0
+        if diff < 0:   # finishes short
+            trouble_mult_depth *= short_factor
+        elif diff > 0: # finishes long
+            trouble_mult_depth *= long_factor
 
-        # Strategy multiplier (aggressive vs conservative)
-        leave_exp *= trouble_mult * sf
+        # --- 4) Lateral trouble multiplier (left/right) ---
+        sigma_lat = get_lateral_sigma(cat) * skill_factor * lie_factor
+        side_safe = 12.0  # yards off-line that we consider "ok" around the green
 
-        # Total expected score from this decision:
-        #   1 stroke for this shot + expected from leave
+        # Probability of being outside +/- side_safe sideways
+        p_side_miss = 1.0 - (
+            _normal_cdf(side_safe, 0.0, sigma_lat)
+            - _normal_cdf(-side_safe, 0.0, sigma_lat)
+        )
+        # With symmetric distribution, split equally
+        p_left_miss = 0.5 * p_side_miss
+        p_right_miss = 0.5 * p_side_miss
+
+        lateral_mult = 1.0
+        lateral_mult += p_left_miss * (left_factor - 1.0)
+        lateral_mult += p_right_miss * (right_factor - 1.0)
+
+        total_trouble_mult = trouble_mult_depth * lateral_mult
+
+        # Apply strategy (aggressive vs conservative) on top
+        leave_exp *= total_trouble_mult * sf
+
+        # --- 5) Final SG from this decision ---
         exp_strokes = 1.0 + leave_exp
-
         sg = baseline - exp_strokes
 
         # ---- Reason text ---- #
@@ -613,24 +756,46 @@ def recommend_shots_with_sg(
         if abs_diff <= 5:
             reason_parts.append("Distances match the plays-like yardage closely.")
         else:
-            reason_parts.append("Distances are reasonably close to the plays-like yardage.")
+            reason_parts.append(
+                "Distances are reasonably close to the plays-like yardage."
+            )
 
-        if trouble_mult > 1.0:
+        if trouble_mult_depth > 1.0:
             if diff < 0 and short_trouble_label.lower() != "none":
-                reason_parts.append("Short misses are penal here; being short is risky.")
+                reason_parts.append(
+                    "Short misses are penal here; being short is risky."
+                )
             elif diff > 0 and long_trouble_label.lower() != "none":
-                reason_parts.append("Long misses are penal here; being long is risky.")
+                reason_parts.append(
+                    "Long misses are penal here; being long is risky."
+                )
+
+        if lateral_mult > 1.0:
+            if left_trouble_label.lower() != "none":
+                reason_parts.append(
+                    "Missing left brings real trouble into play."
+                )
+            if right_trouble_label.lower() != "none":
+                reason_parts.append(
+                    "Missing right brings real trouble into play."
+                )
 
         if sg > 0.2:
-            reason_parts.append("Strong strokes-gained style profile vs your baseline.")
+            reason_parts.append(
+                "Strong strokes-gained style profile vs your baseline."
+            )
         elif sg < -0.2:
-            reason_parts.append("Weaker strokes-gained style profile; consider safer options.")
+            reason_parts.append(
+                "Weaker strokes-gained style profile; consider safer options."
+            )
         else:
             reason_parts.append("Strokes-gained profile is roughly neutral.")
 
         shot_out = dict(shot)
         shot_out.update(
             {
+                "total": eff_total,        # effective total after lie/firmness
+                "raw_total": raw_total,    # underlying bag number
                 "diff": diff,
                 "sg": sg,
                 "expected_strokes": exp_strokes,
@@ -642,6 +807,7 @@ def recommend_shots_with_sg(
 
     results.sort(key=lambda s: (-s["sg"], abs(s["diff"])))
     return results[:top_n]
+
 
 def compute_optimal_carry_for_target(target_total, category):
     """Simple category-based 'ideal carry' offset."""
