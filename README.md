@@ -9,9 +9,6 @@ Uses real strokes-gained math, dispersion modeling, wind, elevation, lie penalti
 [![Coverage](https://codecov.io/gh/bmathews04/GolfShotSelector/branch/main/graph/badge.svg)](https://codecov.io/gh/bmathews04/GolfShotSelector)
 [![Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://golf-caddy-bryanmathews.streamlit.app/)
 
-![demo](https://raw.githubusercontent.com/bmathews04/GolfShotSelector/main/screenshot.png)  
-*150 yd into the wind → instantly see why 6i beats 5i*
-
 ### Features
 - Full-bag + partial-swing recommendations
 - Monte-Carlo dispersion simulation (400 shots)
