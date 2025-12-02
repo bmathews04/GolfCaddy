@@ -640,13 +640,19 @@ with tab_play:
                                         anchor="middle",
                                     ),
                                 )
-                                .configure_view(stroke=None, fill="#05070b")
-                                .configure_title(color="#f5f5f5")
                             )
 
                             charts.append(chart)
 
+                        if not charts:
+                            return
+
                         combo = alt.hconcat(*charts, spacing=16)
+                        combo = (
+                            combo
+                            .configure_view(stroke=None, fill="#05070b")
+                            .configure_title(color="#f5f5f5")
+                        )
                         st.markdown("### Shot Windows vs Plays-Like")
                         st.altair_chart(combo, use_container_width=True)
 
