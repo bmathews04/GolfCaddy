@@ -8,6 +8,9 @@ import plotly.graph_objects as go
 import strokes_gained_engine as sge  # <-- your engine module
 
 
+def _clip01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
 # ------------------------------------------------------------
 # Page config
 # ------------------------------------------------------------
@@ -498,13 +501,90 @@ with tab_play:
                     )
                 else:
                     st.subheader("Recommended Options")
+
+                    # Lie factor for current situation (you’re hitting from fairway in Caddy mode)
+                    lie_factor_for_visuals = sge.lie_dispersion_factor("fairway")
+                    side_safe = 12.0  # yards off-line we treat as "okay" around the green
+
                     for i, s in enumerate(ranked, start=1):
+                        # --- Core line ---
                         st.markdown(
                             f"**{i}. {s['club']} — {s['shot_type']}**  "
-                            f"(Carry ≈ {s['carry']:.1f} yds, Total ≈ {s['total']:.1f} yds, "
+                            f"(Carry ≈ {s['carry']:.1f} yds, "
+                            f"Total ≈ {s['total']:.1f} yds, "
                             f"SG ≈ {s['sg']:.3f})"
                         )
                         st.caption(s["reason"])
+
+                        # --- Probabilities pulled from the same model as the engine ---
+
+                        cat = s.get("category", "mid_iron")
+                        diff = s.get("diff", s["total"] - target_final)
+
+                        # Depth dispersion (yards) for this club
+                        sigma_depth = (
+                            sge.get_dispersion_sigma(cat)
+                            * skill_factor
+                            * lie_factor_for_visuals
+                        )
+
+                        # Lateral dispersion
+                        sigma_lat = (
+                            sge.get_lateral_sigma(cat)
+                            * skill_factor
+                            * lie_factor_for_visuals
+                        )
+
+                        # 1) Within ±5 yds (depth) – already computed in engine as p_close
+                        p_close = _clip01(s.get("p_close", 0.0))
+
+                        # 2) Short vs long probabilities (depth)
+                        #   Model Y ~ N(mu=diff, sigma=sigma_depth), where Y>0 => long
+                        p_short = _clip01(sge._normal_cdf(0.0, diff, sigma_depth))
+                        p_long = _clip01(1.0 - p_short)
+
+                        # 3) Side miss probability beyond ±side_safe
+                        #   Symmetric around 0, so left/right split is 50/50
+                        p_side_miss = 1.0 - (
+                            sge._normal_cdf(side_safe, 0.0, sigma_lat)
+                            - sge._normal_cdf(-side_safe, 0.0, sigma_lat)
+                        )
+                        p_side_miss = _clip01(p_side_miss)
+
+                        # Map that to *trouble* specifically if any is marked
+                        p_into_trouble = None
+                        trouble_side_label = None
+
+                        has_left_trouble = left_trouble_label != "None"
+                        has_right_trouble = right_trouble_label != "None"
+
+                        if has_left_trouble and has_right_trouble:
+                            # Any big side miss is bad
+                            p_into_trouble = p_side_miss
+                            trouble_side_label = "left or right"
+                        elif has_left_trouble:
+                            p_into_trouble = 0.5 * p_side_miss
+                            trouble_side_label = "left"
+                        elif has_right_trouble:
+                            p_into_trouble = 0.5 * p_side_miss
+                            trouble_side_label = "right"
+
+                        # --- Render probabilities as a compact bullet list ---
+                        probs_lines = [
+                            f"- Within ±5 yds (depth): **{p_close * 100:.0f}%**",
+                            f"- Miss pattern depth: **{p_short * 100:.0f}% short** / "
+                            f"**{p_long * 100:.0f}% long**",
+                        ]
+                        if p_into_trouble is not None:
+                            probs_lines.append(
+                                f"- Side miss into **{trouble_side_label} trouble** "
+                                f"(beyond ~{side_safe:.0f} yds): "
+                                f"**{p_into_trouble * 100:.0f}%**"
+                            )
+
+                        st.markdown("\n".join(probs_lines))
+                        st.markdown("---")
+
                                        # --------------------------------------------------------
                     # VISUAL PACK: Gauge + Top-5 grid + Green overview
                     # --------------------------------------------------------
