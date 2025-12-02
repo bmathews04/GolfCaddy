@@ -1,12 +1,5 @@
 [![codecov](https://codecov.io/github/bmathews04/GolfShotSelector/branch/main/graph/badge.svg?token=NIDVNSLRM2)](https://codecov.io/github/bmathews04/GolfShotSelector)
 
-<a href="https://codecov.io/github/bmathews04/GolfShotSelector" > 
- <img src="https://codecov.io/github/bmathews04/GolfShotSelector/branch/main/graph/badge.svg?token=NIDVNSLRM2"/> 
- </a>
-
- .. image:: https://codecov.io/github/bmathews04/GolfShotSelector/branch/main/graph/badge.svg?token=NIDVNSLRM2 
- :target: https://codecov.io/github/bmathews04/GolfShotSelector
-
 
 Overview
 
