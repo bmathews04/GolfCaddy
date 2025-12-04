@@ -1246,8 +1246,6 @@ with tab_putting:
             "On the course, combine the numbers with your own eyes and instincts."
         )
 
-
-
 # ============================================================
 # PAR STRATEGY TAB (Hole Strategy)
 # ============================================================
