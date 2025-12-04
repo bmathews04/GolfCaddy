@@ -297,7 +297,7 @@ def draw_range_dispersion(selected_club: str, full_bag, skill_label: str, handic
 # ------------------------------------------------------------
 
 tab_play, tab_range, tab_yardages, tab_strategy, tab_prep, tab_info = st.tabs(
-    ["Play", "Range", "Yardages", "Par Strategy", "Tournament Prep", "Info"]
+    ["Play", "Range", "Yardages", "Putting", "Par Strategy", "Tournament Prep", "Info"]
 )
 
 # ============================================================
@@ -1096,6 +1096,156 @@ with tab_yardages:
         drop=True
     )
     st.dataframe(df_score, use_container_width=True)
+
+# ============================================================
+# PUTTING TAB
+# ============================================================
+
+with tab_putting:
+    st.subheader("Putting Simulator & Green Reading")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        putt_length = st.slider(
+            "Putt length (feet)",
+            min_value=2.0,
+            max_value=60.0,
+            value=12.0,
+            step=1.0,
+        )
+        stimp = st.slider(
+            "Green Speed (Stimp)",
+            min_value=8.0,
+            max_value=13.0,
+            value=10.0,
+            step=0.5,
+            help="Approximate Stimp reading for the green.",
+        )
+
+    with col2:
+        slope_dir = st.selectbox(
+            "Net Slope Direction",
+            ["Flat", "Uphill", "Downhill"],
+        )
+        slope_severity = st.selectbox(
+            "Slope Difficulty",
+            ["None/Flat", "Subtle", "Moderate", "Severe"],
+        )
+
+    with col3:
+        break_dir = st.selectbox(
+            "Break Direction",
+            ["Straight", "Left-to-right", "Right-to-left"],
+        )
+        break_size = st.selectbox(
+            "Break Size at the Hole",
+            ["Barely", "Cup", "2–3 cups", "Big bender"],
+        )
+
+        putt_skill_label = st.selectbox(
+            "Putting Confidence (for model)",
+            ["Very shaky", "Average", "Confident"],
+            help="Only used for probabilities – doesn't judge your self-worth 😉",
+        )
+
+    # Map putting confidence to a pseudo 'handicap_factor' tweak
+    if putt_skill_label == "Very shaky":
+        putt_handicap_mult = 1.3
+    elif putt_skill_label == "Confident":
+        putt_handicap_mult = 0.8
+    else:
+        putt_handicap_mult = 1.0
+
+    effective_handicap = st.session_state.handicap_factor * putt_handicap_mult
+
+    if st.button("Simulate This Putt ✅"):
+        res = sge.simulate_putting_scenario(
+            distance_ft=putt_length,
+            stimp=stimp,
+            slope_dir=slope_dir,
+            slope_severity_label=slope_severity,
+            break_dir=break_dir,
+            break_size_label=break_size,
+            handicap_factor=effective_handicap,
+        )
+
+        p_make = res["p_make"]
+        p_two = res["p_two_putt"]
+        p_three = res["p_three_plus"]
+        aim_inches = res["aim_inches"]
+        speed_advice = res["speed_advice"]
+
+        st.markdown("### Outcome Probabilities")
+
+        colm, col2p, col3p = st.columns(3)
+        with colm:
+            st.metric("Make", f"{p_make*100:.1f} %")
+        with col2p:
+            st.metric("Two-putt", f"{p_two*100:.1f} %")
+        with col3p:
+            st.metric("Three-plus", f"{p_three*100:.1f} %")
+
+        # Compact risk meter based on 3-putt risk
+        if p_three < 0.05:
+            risk_color = "🟢"
+            risk_text = "Low three-putt risk"
+        elif p_three < 0.15:
+            risk_color = "🟡"
+            risk_text = "Moderate three-putt risk"
+        else:
+            risk_color = "🔴"
+            risk_text = "High three-putt risk – prioritize cozy speed"
+
+        st.caption(f"{risk_color} {risk_text}")
+
+        # Bar chart of distribution
+        data = pd.DataFrame(
+            {
+                "Outcome": ["Make", "Two-putt", "Three-plus"],
+                "Probability": [p_make, p_two, p_three],
+            }
+        )
+
+        chart = (
+            alt.Chart(data)
+            .mark_bar(cornerRadiusTopLeft=5, cornerRadiusTopRight=5)
+            .encode(
+                x=alt.X("Outcome:N", title=""),
+                y=alt.Y("Probability:Q", title="Probability", axis=alt.Axis(format="%")),
+                color=alt.Color(
+                    "Outcome:N",
+                    scale=alt.Scale(
+                        domain=["Make", "Two-putt", "Three-plus"],
+                        range=["#2ecc71", "#3498db", "#e74c3c"],
+                    ),
+                    legend=None,
+                ),
+            )
+            .properties(height=260)
+            .configure_view(stroke=None, fill="#05070b")
+            .configure_axis(labelColor="#f5f5f5", titleColor="#f5f5f5")
+            .configure_title(color="#f5f5f5")
+        )
+
+        st.altair_chart(chart, use_container_width=True)
+
+        # Aim & speed guidance
+        st.markdown("### Aim & Speed Suggestion")
+
+        if abs(aim_inches) < 0.25:
+            aim_text = "Play this essentially straight."
+        else:
+            side = "outside right edge" if aim_inches > 0 else "outside left edge"
+            aim_text = f"Aim about **{abs(aim_inches):.1f}\" {side}**."
+
+        st.markdown(f"- **Aim:** {aim_text}")
+        st.markdown(f"- **Speed:** {speed_advice}")
+        st.caption(
+            "Use this as a *practice* tool to calibrate your feels. "
+            "On the course, combine the numbers with your own eyes and instincts."
+        )
+
 
 
 # ============================================================
