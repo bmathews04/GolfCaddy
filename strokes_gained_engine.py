@@ -1056,6 +1056,190 @@ def par5_strategy(
         "go_for_it_score": go_for_it_score,
     }
 
+# ============================================================
+# Putting model (simple but realistic-ish)
+# ============================================================
+
+def _putt_base_make_prob(distance_ft: float) -> float:
+    """
+    Baseline make probability for a reasonably skilled amateur
+    on a flat, medium-speed green (Stimp ~10), no special slope/break.
+    Calibrated so that:
+      - 3 ft  -> ~90% make
+      - 10 ft -> ~30% make
+    """
+    d = max(0.5, float(distance_ft))
+    # logistic: logit(p) = a + b * distance
+    a = 3.502
+    b = -0.435
+    logit = a + b * d
+    p = 1.0 / (1.0 + math.exp(-logit))
+    return max(0.01, min(0.99, p))
+
+
+def putting_make_prob(
+    distance_ft: float,
+    stimp: float = 10.0,
+    slope_severity_label: str = "None/Flat",
+    handicap_factor: float = 1.0,
+) -> float:
+    """
+    Adjust baseline make probability for green speed, slope severity, and handicap.
+    """
+    p = _putt_base_make_prob(distance_ft)
+
+    # Stimp adjustment: faster greens = slightly higher make rate (if controlled)
+    # Stimp 10 is baseline. +/- 1 Stimp -> +/- 2% make probability (capped).
+    stimp_diff = float(stimp) - 10.0
+    stimp_factor = 1.0 + 0.02 * stimp_diff
+    stimp_factor = max(0.9, min(1.1, stimp_factor))
+
+    # Slope severity: harder slopes reduce make rate
+    sev = (slope_severity_label or "None/Flat").lower()
+    if "none" in sev or "flat" in sev:
+        slope_factor = 1.0
+    elif "subtle" in sev:
+        slope_factor = 0.9
+    elif "moderate" in sev:
+        slope_factor = 0.75
+    else:  # "severe"
+        slope_factor = 0.55
+
+    # Handicap: higher handicap => lower make rate
+    # handicap_factor > 1.0 => scale down, <1.0 => scale up slightly.
+    # Use a gentle exponent so we don't overdo it.
+    handicap_term = 1.0 / (handicap_factor ** 0.35)
+
+    p_adj = p * stimp_factor * slope_factor * handicap_term
+    return max(0.01, min(0.99, p_adj))
+
+
+def putting_three_putt_prob(
+    distance_ft: float,
+    stimp: float = 10.0,
+    slope_severity_label: str = "None/Flat",
+    handicap_factor: float = 1.0,
+) -> float:
+    """
+    Very simple 3-putt risk model:
+      - Almost zero inside ~20 ft
+      - Starts ramping up beyond ~25 ft
+      - Higher on faster / more sloped greens and for higher handicaps.
+    """
+    d = max(0.5, float(distance_ft))
+    if d <= 20.0:
+        base = 0.0
+    else:
+        base = max(0.0, 0.02 * (d - 20.0))  # grows ~2% per foot beyond 20
+
+    # Cap base 3-putt risk
+    base = min(base, 0.35)
+
+    # Slope & green speed make 3-putts more likely
+    sev = (slope_severity_label or "None/Flat").lower()
+    if "none" in sev or "flat" in sev:
+        slope_mult = 1.0
+    elif "subtle" in sev:
+        slope_mult = 1.1
+    elif "moderate" in sev:
+        slope_mult = 1.3
+    else:
+        slope_mult = 1.6
+
+    stimp_mult = 1.0 + 0.03 * (float(stimp) - 10.0)  # faster = more 3-putts
+    handicap_mult = handicap_factor ** 0.4
+
+    p3 = base * slope_mult * stimp_mult * handicap_mult
+    return max(0.0, min(0.6, p3))
+
+
+def simulate_putting_scenario(
+    distance_ft: float,
+    stimp: float,
+    slope_dir: str,
+    slope_severity_label: str,
+    break_dir: str,
+    break_size_label: str,
+    handicap_factor: float = 1.0,
+):
+    """
+    High-level wrapper returning:
+      - p_make, p_two_putt, p_three_plus
+      - recommended aim (inches outside edge, signed)
+      - recommended speed description
+    """
+    p_make = putting_make_prob(
+        distance_ft=distance_ft,
+        stimp=stimp,
+        slope_severity_label=slope_severity_label,
+        handicap_factor=handicap_factor,
+    )
+
+    p_three = putting_three_putt_prob(
+        distance_ft=distance_ft,
+        stimp=stimp,
+        slope_severity_label=slope_severity_label,
+        handicap_factor=handicap_factor,
+    )
+
+    p_two = max(0.0, 1.0 - p_make - p_three)
+
+    # Aim recommendation (very rough, but intuitive)
+    break_size_label = (break_size_label or "Barely").lower()
+    if "barely" in break_size_label or "none" in break_size_label:
+        base_aim = 0.5  # inches
+    elif "cup" in break_size_label and "2" not in break_size_label:
+        base_aim = 2.0
+    elif "2" in break_size_label or "3" in break_size_label:
+        base_aim = 6.0
+    else:  # big bender
+        base_aim = 12.0
+
+    # Slightly more aim on faster / more sloped greens
+    sev = (slope_severity_label or "").lower()
+    if "moderate" in sev:
+        base_aim *= 1.2
+    elif "severe" in sev:
+        base_aim *= 1.5
+
+    stimp_factor = 1.0 + 0.05 * max(0.0, stimp - 10.0)
+    base_aim *= stimp_factor
+
+    # Direction: sign convention (R->L negative, L->R positive)
+    bd = (break_dir or "Straight").lower()
+    if "straight" in bd:
+        aim_inches = 0.0
+    elif "left" in bd and "right" in bd:
+        aim_inches = 0.0  # weird input, treat as straight
+    elif "left-to-right" in bd or "ltr" in bd:
+        aim_inches = base_aim
+    elif "right-to-left" in bd or "rtl" in bd:
+        aim_inches = -base_aim
+    else:
+        aim_inches = 0.0
+
+    # Speed recommendation
+    sd = (slope_dir or "Flat").lower()
+    if "down" in sd:
+        speed = "Let it die at the hole (capture speed)."
+    elif "up" in sd:
+        if distance_ft <= 10:
+            speed = "Firm to the back of the cup."
+        else:
+            speed = "Commit to a solid roll that would finish 1–2 ft past."
+    else:
+        if distance_ft <= 6:
+            speed = "Confident, center-of-the-cup speed."
+        else:
+            speed = "Smooth pace aiming to finish ~1 ft past the hole."
+
+    return {
+        "p_make": p_make,
+        "p_two_putt": p_two,
+        "p_three_plus": p_three,
+        "aim_inches": aim_inches,
+        "speed_advice": speed,
+    }
 
 
 # ============================================================
