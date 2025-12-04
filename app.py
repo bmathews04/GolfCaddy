@@ -189,6 +189,109 @@ st.session_state.driver_speed = float(driver_speed)
 # Build bag & candidates from engine
 all_shots_base, scoring_shots, full_bag = sge.build_all_candidate_shots(driver_speed)
 
+def draw_range_dispersion(selected_club: str, full_bag, skill_label: str, handicap_factor: float):
+    """
+    Simulate and draw shot dispersion for the selected club in Range mode.
+    Uses your engine's depth & lateral sigma logic, scaled by skill + handicap.
+    """
+    # Find club row
+    row = next((r for r in full_bag if r["Club"] == selected_club), None)
+    if row is None:
+        st.info("No yardage data found for this club.")
+        return
+
+    carry_center = float(row["Carry (yds)"])
+
+    # Map to category
+    category = _category_for_club(selected_club)
+
+    # Skill -> scale
+    skill_norm = (skill_label or "Intermediate").lower()
+    if skill_norm == "recreational":
+        skill_factor = 1.3
+    elif skill_norm == "highly consistent":
+        skill_factor = 0.8
+    else:
+        skill_factor = 1.0
+
+    skill_factor *= handicap_factor
+
+    # Depth & lateral dispersion (already lie-aware via helper if you want)
+    sigma_depth = sge.get_dispersion_sigma(category) * skill_factor * sge.lie_dispersion_factor("fairway")
+    sigma_lat = sge.get_lateral_sigma(category) * skill_factor * sge.lie_dispersion_factor("fairway")
+
+    # Simulate shots
+    n = 180
+    x = np.random.normal(loc=0.0, scale=sigma_lat, size=n)
+    y = np.random.normal(loc=carry_center, scale=sigma_depth, size=n)
+
+    df = pd.DataFrame({"x": x, "y": y})
+
+    # For bands & guides
+    band_df = pd.DataFrame({
+        "x": [-30, 30],
+        "y_min": [carry_center - sigma_depth, carry_center - sigma_depth],
+        "y_max": [carry_center + sigma_depth, carry_center + sigma_depth],
+    })
+    target_line_df = pd.DataFrame({"x": [0.0]})
+
+    scatter = (
+        alt.Chart(df)
+        .mark_circle(size=28, opacity=0.25, color="#3498db")
+        .encode(
+            x=alt.X(
+                "x:Q",
+                title="Lateral miss (yds, - = left, + = right)",
+                scale=alt.Scale(domain=[-3 * sigma_lat, 3 * sigma_lat]),
+            ),
+            y=alt.Y(
+                "y:Q",
+                title="Carry distance (yds)",
+                scale=alt.Scale(domain=[carry_center - 3 * sigma_depth, carry_center + 3 * sigma_depth]),
+            ),
+        )
+    )
+
+    band = (
+        alt.Chart(band_df)
+        .mark_rect(opacity=0.12, color="#ecf0f1")
+        .encode(
+            x="x:Q",
+            x2=alt.X2("x2:Q", field="x"),
+            y="y_min:Q",
+            y2="y_max:Q",
+        )
+    )
+
+    # quick trick so x2 works from same column
+    band = band.encode(x2="x:Q")
+
+    target_line = (
+        alt.Chart(target_line_df)
+        .mark_rule(color="#f1c40f", strokeWidth=2)
+        .encode(x="x:Q")
+    )
+
+    chart = (
+        alt.layer(band, scatter, target_line)
+        .properties(
+            height=320,
+            title=alt.TitleParams(
+                f"{selected_club} Dispersion (Simulated)",
+                subtitle=f"Center ≈ {carry_center:.0f} yds • σ_depth ≈ {sigma_depth:.1f} • σ_lat ≈ {sigma_lat:.1f}",
+                anchor="start",
+                fontSize=14,
+            ),
+        )
+        .configure_view(stroke=None, fill="#05070b")
+        .configure_axis(labelColor="#f5f5f5", titleColor="#f5f5f5")
+        .configure_title(color="#f5f5f5")
+    )
+
+    st.markdown("### Simulated Shot Dispersion")
+    st.altair_chart(chart, use_container_width=True)
+
+
 # ------------------------------------------------------------
 # Tabs
 # ------------------------------------------------------------
@@ -938,6 +1041,18 @@ with tab_range:
             st.dataframe(df_s, use_container_width=True)
         else:
             st.info("No scoring/partial shots defined for this club.")
+
+        # At top of file we already store skill/handicap in session state
+        skill_label = st.session_state.get("skill", "Intermediate")
+        handicap_factor = st.session_state.handicap_factor
+
+        draw_range_dispersion(
+            selected_club=selected_club,
+            full_bag=full_bag,
+            skill_label=skill_label,
+            handicap_factor=handicap_factor,
+        )
+        
 
 
 # ============================================================
