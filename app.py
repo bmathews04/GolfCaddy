@@ -117,16 +117,16 @@ with st.sidebar:
 
     st.markdown("**Playing Context**")
     st.session_state.tournament_mode = st.checkbox(
-        "Tournament Mode (rules-safe)",
+        "Tournament Mode",
         value=st.session_state.tournament_mode,
-        help="When enabled, the main 'Play' tab behaves like a digital yardage book only "
+        help="Rules Safe - When enabled, the main 'Play' tab behaves like a digital yardage book only "
              "— no plays-like yardages or recommendations.",
     )
 
     st.markdown("---")
     st.markdown("**Handicap / Skill**")
     handicap_label = st.radio(
-        "Approximate handicap band",
+        "Approximate Handicap",
         ["0–5", "6–12", "13–20", "21+"],
         index=1,  # default 6–12
         help="Used to scale dispersion windows & strokes-gained sensitivity. "
@@ -142,16 +142,11 @@ with st.sidebar:
     else:
         st.session_state.handicap_factor = 1.35
 
-    st.markdown(
-        "Smaller factor = tighter windows and more aggressive SG assumptions.\n\n"
-        "Larger factor = wider windows and more conservative expectations."
-    )
-
     # NEW: ambient temperature (°F)
     temp_f = st.slider(
         "Ambient Temperature (°F)",
-        min_value=40,
-        max_value=100,
+        min_value=30,
+        max_value=110,
         value=int(st.session_state.get("temp_f", 75)),
         step=1,
         help="Used for plays-like yardage calculations (hotter = ball flies farther).",
@@ -296,7 +291,7 @@ def draw_range_dispersion(selected_club: str, full_bag, skill_label: str, handic
 # Tabs
 # ------------------------------------------------------------
 tab_play, tab_range, tab_yardages, tab_putting, tab_strategy, tab_prep, tab_info = st.tabs(
-    ["Play", "Range", "Yardages", "Putting", "Par Strategy", "Tournament Prep", "Info"]
+    ["Course", "Range", "Yardages", "Putting", "Par Strategy", "Tournament Prep", "Info"]
 )
 
 # ============================================================
@@ -317,7 +312,7 @@ with tab_play:
             max_value=350.0,
             value=150.0,
             step=1.0,
-            help="Measured distance from your rangefinder or GPS.",
+            help="Measured distance from rangefinder or GPS.",
         )
 
         st.info(
@@ -368,7 +363,7 @@ with tab_play:
         # ----------------------------------------------------
         # Normal Caddy Mode (Quick vs Advanced)
         # ----------------------------------------------------
-        st.subheader("On-Course Caddy Mode")
+        st.subheader("On-Course Mode:")
 
         mode = st.radio(
             "Mode",
@@ -442,7 +437,7 @@ with tab_play:
                     value=True,
                 )
                 manual_strategy = st.radio(
-                    "Strategy (if not auto)",
+                    "Strategy",
                     [sge.STRATEGY_BALANCED, sge.STRATEGY_CONSERVATIVE, sge.STRATEGY_AGGRESSIVE],
                     index=0,
                     help="Conservative favors safety, Aggressive chases pins, Balanced is in between.",
@@ -562,7 +557,7 @@ with tab_play:
                     target_final -= 3.0
 
                 st.markdown(
-                    f"### Adjusted Target (plays as): **{target_final:.1f} yds**"
+                    f"### Adjusted Target (plays like): **{target_final:.1f} yds**"
                 )
 
                 if use_auto_strategy:
@@ -685,21 +680,21 @@ with tab_play:
 
                         if total_risk < 0.25:
                             risk_icon = "🟢"
-                            risk_label = "Low risk"
+                            risk_label = "Low Risk"
                             risk_color = "#2ecc71"
                         elif total_risk < 0.5:
                             risk_icon = "🟡"
-                            risk_label = "Medium risk"
+                            risk_label = "Medium Risk"
                             risk_color = "#f1c40f"
                         else:
                             risk_icon = "🔴"
-                            risk_label = "High risk"
+                            risk_label = "High Risk"
                             risk_color = "#e74c3c"
 
                         # --- Render probabilities (neutral) ---
                         probs_lines = [
                             f"- Within ±5 yds (depth): **{p_close * 100:.0f}%**",
-                            f"- Miss pattern depth: **{p_short * 100:.0f}% short** / "
+                            f"- Miss Pattern Depth: **{p_short * 100:.0f}% short** / "
                             f"**{p_long * 100:.0f}% long**",
                         ]
                         if trouble_side_label is not None:
@@ -721,7 +716,6 @@ with tab_play:
                                     {risk_label}
                                 </span>
                                 <span style="color:#aaaaaa;">
-                                    (overall miss risk)
                                 </span>
                             </div>
                             """,
@@ -1006,10 +1000,10 @@ with tab_play:
 # ============================================================
 
 with tab_range:
-    st.subheader("Range Mode: Stock Yardages by Club")
+    st.subheader("Range Mode:")
 
     club_options = [row["Club"] for row in full_bag]
-    selected_club = st.selectbox("Select club", club_options)
+    selected_club = st.selectbox("Select Club", club_options)
 
     use_scoring = st.checkbox(
         "Show wedge scoring/partial shots for this club (if available)",
@@ -1059,7 +1053,7 @@ with tab_range:
 # ============================================================
 
 with tab_yardages:
-    st.subheader("Full Bag Yardages")
+    st.subheader("Full Bag Yardages:")
 
     df_full = pd.DataFrame(full_bag)
     df_full["Carry (yds)"] = df_full["Carry (yds)"].round(0)
@@ -1086,7 +1080,7 @@ with tab_yardages:
     df_full = df_full.reset_index(drop=True)
     st.dataframe(df_full, use_container_width=True)
 
-    st.markdown("### Scoring / Partial Shot Yardages")
+    st.markdown("### Scoring / Partial Shot Yardages:")
     df_score = pd.DataFrame(scoring_shots)
     df_score = df_score[["carry", "club", "shot_type", "trajectory"]]
     df_score.columns = ["Carry (yds)", "Club", "Shot Type", "Trajectory"]
@@ -1101,18 +1095,18 @@ with tab_yardages:
 # ============================================================
 
 with tab_putting:
-    st.subheader("Putting Simulator & Green-Reading Practice")
+    st.subheader("Putting Prep:")
 
     st.caption(
         "Use this to sanity-check how hard a putt really is and practice your mental routine. "
-        "These numbers are approximate and scaled to your handicap band."
+        "These numbers are approximate and scaled to your handicap."
     )
 
     # ---- Inputs ----
     col1, col2, col3 = st.columns(3)
     with col1:
         putt_length_ft = st.slider(
-            "Putt length (feet)",
+            "Putt Length (feet)",
             min_value=3.0,
             max_value=60.0,
             value=12.0,
@@ -1120,7 +1114,7 @@ with tab_putting:
         )
     with col2:
         stimp = st.slider(
-            "Green speed (Stimp)",
+            "Green Speed (Stimp)",
             min_value=8.0,
             max_value=13.0,
             value=10.5,
@@ -1128,25 +1122,26 @@ with tab_putting:
         )
     with col3:
         slope_dir = st.selectbox(
-            "Overall slope",
+            "Overall Slope",
             ["Flat", "Uphill", "Downhill"],
         )
 
     col4, col5, col6 = st.columns(3)
     with col4:
         break_dir = st.selectbox(
-            "Break direction",
+            "Break Direction",
             ["Straight", "Left-to-Right", "Right-to-Left", "Double Break"],
         )
     with col5:
         break_severity = st.selectbox(
-            "Break severity",
+            "Break Severity",
             ["Subtle", "Moderate", "Big"],
             index=1,
         )
     with col6:
         nerves = st.slider(
-            "Pressure / Nerves (1 = super calm, 10 = very tight)",
+            "Pressure / Nerves",
+            help="(1 = super calm, 10 = very tight)",
             min_value=1,
             max_value=10,
             value=4,
@@ -1280,7 +1275,7 @@ with tab_putting:
     # ---- Compact probability bar chart ----
     prob_df = pd.DataFrame(
         {
-            "Outcome": ["1-putt", "2-putt", "3+ putt"],
+            "Outcome": ["1-Putt", "2-Putt", "3+ Putt"],
             "Probability": [make_p * 100, two_p * 100, three_p * 100],
         }
     )
@@ -1332,9 +1327,9 @@ with tab_strategy:
 
     col_s1, col_s2 = st.columns(2)
     with col_s1:
-        par_type = st.selectbox("Hole type", ["Par 3", "Par 4", "Par 5"])
+        par_type = st.selectbox("Hole Type", ["Par 3", "Par 4", "Par 5"])
         hole_yards = st.number_input(
-            "Hole yardage (tee to green center)",
+            "Hole Yardage",
             min_value=60.0,
             max_value=650.0,
             value=420.0 if par_type == "Par 4" else (180.0 if par_type == "Par 3" else 520.0),
@@ -1342,12 +1337,12 @@ with tab_strategy:
         )
     with col_s2:
         fairway_width = st.selectbox(
-            "Fairway width (for tee shot)", 
+            "Fairway Width (for tee shot)", 
             ["Narrow", "Medium", "Wide"],
             index=1,
         )
-        tee_left_trouble = st.selectbox("Trouble left off tee?", ["None", "Mild", "Severe"])
-        tee_right_trouble = st.selectbox("Trouble right off tee?", ["None", "Mild", "Severe"])
+        tee_left_trouble = st.selectbox("Trouble Left?", ["None", "Mild", "Severe"])
+        tee_right_trouble = st.selectbox("Trouble Right?", ["None", "Mild", "Severe"])
 
     skill_factor = 1.0 * st.session_state.handicap_factor
 
@@ -1370,12 +1365,12 @@ with tab_strategy:
                 st.warning("No suitable Par 3 strategy found.")
             else:
                 st.markdown(
-                    f"**Recommended tee shot:** {best['club']} — {best['shot_type']}  "
+                    f"**Recommended Tee Shot:** {best['club']} — {best['shot_type']}  "
                     f"(Total ≈ {best['total']:.0f} yds, SG vs baseline ≈ {best['sg']:.3f})"
                 )
                 st.caption(
-                    f"Approx. probability on/near green: within 10 yds ≈ {best['p_within_10']*100:.0f}%, "
-                    f"within 5 yds ≈ {best['p_within_5']*100:.0f}%."
+                    f"Approx. Probability on/near Green: Within 10 yds ≈ {best['p_within_10']*100:.0f}%, "
+                    f"Within 5 yds ≈ {best['p_within_5']*100:.0f}%."
                 )
 
         elif par_type == "Par 4":
@@ -1393,13 +1388,13 @@ with tab_strategy:
                 st.warning("No suitable Par 4 strategy found.")
             else:
                 st.markdown(
-                    f"**Tee club:** {best['tee_club']} "
-                    f"(Avg total ≈ {best['avg_total']:.0f} yds, "
-                    f"remaining ≈ {best['remaining_yards']:.0f} yds)"
+                    f"**Tee Club:** {best['tee_club']} "
+                    f"(Avg Total ≈ {best['avg_total']:.0f} yds, "
+                    f"Remaining ≈ {best['remaining_yards']:.0f} yds)"
                 )
                 st.caption(
-                    f"Expected score ≈ {best['expected_score']:.2f} "
-                    f"(SG vs baseline ≈ {best['sg_vs_baseline']:.3f})."
+                    f"Expected Score ≈ {best['expected_score']:.2f} "
+                    f"(SG vs Baseline ≈ {best['sg_vs_baseline']:.3f})."
                 )
 
         elif par_type == "Par 5":
@@ -1418,9 +1413,9 @@ with tab_strategy:
                 st.warning("No valid tee strategy found for this par 5.")
             else:
                 st.markdown(
-                    f"**Tee club:** {best_tee['tee_club']} "
-                    f"(Avg total ≈ {best_tee['avg_total']:.0f} yds, "
-                    f"remaining ≈ {best_tee['remaining_yards']:.0f} yds)"
+                    f"**Tee Club:** {best_tee['tee_club']} "
+                    f"(Avg Total ≈ {best_tee['avg_total']:.0f} yds, "
+                    f"Remaining ≈ {best_tee['remaining_yards']:.0f} yds)"
                 )
                 st.markdown(f"**Plan:** {res['strategy']}")
 
@@ -1431,9 +1426,9 @@ with tab_strategy:
                     go_for_it_text = "N/A"
 
                 st.caption(
-                    f"Expected score ≈ {res['expected_score']:.2f} "
-                    f"(Layup plan ≈ {res['layup_score']:.2f}, "
-                    f"Go-for-it plan ≈ {go_for_it_text})."
+                    f"Expected Score ≈ {res['expected_score']:.2f} "
+                    f"(Layup Plan ≈ {res['layup_score']:.2f}, "
+                    f"Go-For-It Plan ≈ {go_for_it_text})."
                 )
 
 
@@ -1444,7 +1439,7 @@ with tab_strategy:
 # ============================================================
 
 with tab_prep:
-    st.header("Tournament Prep: Mental Adjustments Practice")
+    st.header("Tournament Prep:")
 
     # --- Buttons / scenario control ---
     col_gen, col_info = st.columns([2, 3])
@@ -1452,12 +1447,7 @@ with tab_prep:
         if st.button("Generate Random Scenario 🎯"):
             st.session_state.prep_scenario = sge.generate_random_scenario()
             st.session_state.prep_revealed = False
-
-    with col_info:
-        st.caption(
-            "Use this to **train your brain** to do legal on-course adjustments "
-            "(wind, lie, elevation, temperature) **without** depending on the app during play."
-        )
+            help =("Use this to **train your brain** to do legal on-course adjustments")
 
     scenario = st.session_state.get("prep_scenario", None)
 
@@ -1467,19 +1457,19 @@ with tab_prep:
         st.session_state.prep_scenario = scenario
         st.session_state.prep_revealed = False
 
-    st.markdown("**Raw scenario:**")
+    st.markdown("**Raw Scenario:**")
     st.json(scenario)
 
     # --- Engine plays-like (hidden until reveal) ---
     # You can choose to include your personal tendency here; for now we keep it Neutral
     engine_plays_like = sge.calculate_plays_like_yardage(
-        raw_yards=scenario["raw_yards"],
-        wind_dir=scenario["wind_dir"],
-        wind_strength_label=scenario["wind_strength"],
-        elevation_label=scenario["elevation"],
-        lie_label=scenario["lie"],
+        raw_yards=scenario["Yardage"],
+        wind_dir=scenario["Wind Direction"],
+        wind_strength_label=scenario["Wind Strength"],
+        elevation_label=scenario["Elevation"],
+        lie_label=scenario["Lie"],
         tendency_label="Neutral",      # or st.session_state.tendency if you prefer
-        temp_f=st.session_state.get("temp_f", 75.0),
+        temp_f=st.session_state.get("Temperature °F", 75.0),
         baseline_temp_f=75.0,
     )
 
@@ -1487,7 +1477,7 @@ with tab_prep:
     st.markdown("### Your Mental Adjustment")
 
     guess = st.number_input(
-        "What yardage do you think this plays as? (yards)",
+        "What Yardage Do You Think This Plays As? (yards)",
         min_value=50.0,
         max_value=260.0,
         step=1.0,
@@ -1524,9 +1514,9 @@ with tab_prep:
 
         col_l, col_r = st.columns(2)
         with col_l:
-            st.metric("Your plays-like estimate", f"{user_guess:.1f} yds")
+            st.metric("Your Plays-Like Estimate", f"{user_guess:.1f} yds")
         with col_r:
-            st.metric("Engine plays-like (for practice)", f"{engine_plays_like:.1f} yds")
+            st.metric("Engine Plays-Like", f"{engine_plays_like:.1f} yds")
 
         st.markdown(
             f"- Difference: **{diff_abs:.1f} yds** ({'you played it ' if diff != 0 else ''}"
@@ -1543,14 +1533,14 @@ with tab_prep:
     st.markdown("---")
     st.markdown("#### Suggested Mental Rules of Thumb (Practice Only)")
     st.markdown(
-        "- Into wind: add ~1 yard per mph of wind for a 150-yard shot (scale a bit for longer/shorter).  \n"
+        "- Into Wind: add ~1 yard per mph of wind for a 150-yard shot (scale a bit for longer/shorter).  \n"
         "- Downwind: subtract ~0.5 yard per mph of wind.  \n"
-        "- Slight uphill: add ~5 yards.  \n"
-        "- Moderate uphill: add ~10 yards.  \n"
-        "- Slight downhill: subtract ~5 yards.  \n"
-        "- Moderate downhill: subtract ~10 yards.  \n"
+        "- Slight Uphill: add ~5 yards.  \n"
+        "- Moderate Uphill: add ~10 yards.  \n"
+        "- Slight Downhill: subtract ~5 yards.  \n"
+        "- Moderate Downhill: subtract ~10 yards.  \n"
         "- Cold (10°F below 75°F): lose ~2–3 yards at 150y; hot (10°F above) gain ~2–3 yards.  \n"
-        "- Bad lie (thick rough / buried): expect it to come out shorter; good lie: normal."
+        "- Bad Lie (thick rough / buried): expect it to come out shorter; good lie: normal."
     )
 
 
@@ -1569,19 +1559,18 @@ with tab_info:
 
         ### Modes
 
-        - **Play / Caddy Mode**
+        - **Course Mode**
           - Quick: minimal inputs for on-course speed.
           - Advanced: describe trouble, tendencies, and strategy to get richer recommendations.
-
-        - **Tournament Mode**
-          - Turns the Play tab into a digital yardage book only.
-          - No plays-like calculations or recommendations are displayed.
 
         - **Range Mode**
           - Explore your scaled bag distances and scoring shots by club.
 
         - **Yardages**
           - Full-bag and scoring-shot tables, including a rough dispersion estimate.
+
+        - **Putting Prep**
+          - Simulates putting probability based off various green conditions.
 
         - **Par Strategy**
           - High-level guidance for Par 3, 4, and 5 holes using tee-club choices,
