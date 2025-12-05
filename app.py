@@ -483,11 +483,6 @@ with tab_play:
                     ["Front", "Middle", "Back"],
                     index=1,
                 )
-                strategy_label = col6.selectbox(
-                    "Strategy",
-                    [sge.STRATEGY_CONSERVATIVE, sge.STRATEGY_BALANCED, sge.STRATEGY_AGGRESSIVE],
-                    index=1,
-                )
 
                 st.markdown("---")
                 st.markdown("**Player Tendencies**")
