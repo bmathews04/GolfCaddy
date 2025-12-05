@@ -295,7 +295,6 @@ def draw_range_dispersion(selected_club: str, full_bag, skill_label: str, handic
 # ------------------------------------------------------------
 # Tabs
 # ------------------------------------------------------------
-
 tab_play, tab_range, tab_yardages, tab_putting, tab_strategy, tab_prep, tab_info = st.tabs(
     ["Play", "Range", "Yardages", "Putting", "Par Strategy", "Tournament Prep", "Info"]
 )
