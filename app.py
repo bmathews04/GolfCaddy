@@ -1102,149 +1102,227 @@ with tab_yardages:
 # ============================================================
 
 with tab_putting:
-    st.subheader("Putting Simulator & Green Reading")
+    st.subheader("Putting Simulator & Green-Reading Practice")
 
+    st.caption(
+        "Use this to sanity-check how hard a putt really is and practice your mental routine. "
+        "These numbers are approximate and scaled to your handicap band."
+    )
+
+    # ---- Inputs ----
     col1, col2, col3 = st.columns(3)
-
     with col1:
-        putt_length = st.slider(
+        putt_length_ft = st.slider(
             "Putt length (feet)",
-            min_value=2.0,
+            min_value=3.0,
             max_value=60.0,
             value=12.0,
             step=1.0,
         )
+    with col2:
         stimp = st.slider(
-            "Green Speed (Stimp)",
+            "Green speed (Stimp)",
             min_value=8.0,
             max_value=13.0,
-            value=10.0,
+            value=10.5,
             step=0.5,
-            help="Approximate Stimp reading for the green.",
         )
-
-    with col2:
+    with col3:
         slope_dir = st.selectbox(
-            "Net Slope Direction",
+            "Overall slope",
             ["Flat", "Uphill", "Downhill"],
         )
-        slope_severity = st.selectbox(
-            "Slope Difficulty",
-            ["None/Flat", "Subtle", "Moderate", "Severe"],
-        )
 
-    with col3:
+    col4, col5, col6 = st.columns(3)
+    with col4:
         break_dir = st.selectbox(
-            "Break Direction",
-            ["Straight", "Left-to-right", "Right-to-left"],
+            "Break direction",
+            ["Straight", "Left-to-Right", "Right-to-Left", "Double Break"],
         )
-        break_size = st.selectbox(
-            "Break Size at the Hole",
-            ["Barely", "Cup", "2–3 cups", "Big bender"],
+    with col5:
+        break_severity = st.selectbox(
+            "Break severity",
+            ["Subtle", "Moderate", "Big"],
+            index=1,
         )
-
-        putt_skill_label = st.selectbox(
-            "Putting Confidence (for model)",
-            ["Very shaky", "Average", "Confident"],
-            help="Only used for probabilities – doesn't judge your self-worth 😉",
-        )
-
-    # Map putting confidence to a pseudo 'handicap_factor' tweak
-    if putt_skill_label == "Very shaky":
-        putt_handicap_mult = 1.3
-    elif putt_skill_label == "Confident":
-        putt_handicap_mult = 0.8
-    else:
-        putt_handicap_mult = 1.0
-
-    effective_handicap = st.session_state.handicap_factor * putt_handicap_mult
-
-    if st.button("Simulate This Putt ✅"):
-        res = sge.simulate_putting_scenario(
-            distance_ft=putt_length,
-            stimp=stimp,
-            slope_dir=slope_dir,
-            slope_severity_label=slope_severity,
-            break_dir=break_dir,
-            break_size_label=break_size,
-            handicap_factor=effective_handicap,
+    with col6:
+        nerves = st.slider(
+            "Pressure / Nerves (1 = super calm, 10 = very tight)",
+            min_value=1,
+            max_value=10,
+            value=4,
         )
 
-        p_make = res["p_make"]
-        p_two = res["p_two_putt"]
-        p_three = res["p_three_plus"]
-        aim_inches = res["aim_inches"]
-        speed_advice = res["speed_advice"]
+    handicap_factor = st.session_state.get("handicap_factor", 1.0)
 
-        st.markdown("### Outcome Probabilities")
+    # ---- Simple probability model ----
+    def _interp_make_prob(distance_ft: float) -> float:
+        """Approximate TOUR make % vs distance, then we scale for handicap."""
+        # distance (ft), make probability for very good putter
+        pts = [
+            (2, 0.97),
+            (3, 0.92),
+            (4, 0.84),
+            (5, 0.75),
+            (6, 0.67),
+            (8, 0.55),
+            (10, 0.45),
+            (12, 0.38),
+            (15, 0.30),
+            (20, 0.20),
+            (25, 0.16),
+            (30, 0.12),
+            (40, 0.08),
+            (50, 0.05),
+            (60, 0.04),
+        ]
+        d = max(2.0, min(distance_ft, 60.0))
+        for (x1, y1), (x2, y2) in zip(pts[:-1], pts[1:]):
+            if x1 <= d <= x2:
+                # linear interpolation
+                t = (d - x1) / (x2 - x1)
+                return y1 + t * (y2 - y1)
+        return pts[-1][1]
 
-        colm, col2p, col3p = st.columns(3)
-        with colm:
-            st.metric("Make", f"{p_make*100:.1f} %")
-        with col2p:
-            st.metric("Two-putt", f"{p_two*100:.1f} %")
-        with col3p:
-            st.metric("Three-plus", f"{p_three*100:.1f} %")
+    def _putt_prob_model(
+        length_ft: float,
+        stimp: float,
+        slope_dir: str,
+        break_dir: str,
+        break_severity: str,
+        nerves: int,
+        handicap_factor: float,
+    ):
+        # Base “good putter” make % from distance
+        base_make = _interp_make_prob(length_ft)
 
-        # Compact risk meter based on 3-putt risk
-        if p_three < 0.05:
-            risk_color = "🟢"
-            risk_text = "Low three-putt risk"
-        elif p_three < 0.15:
-            risk_color = "🟡"
-            risk_text = "Moderate three-putt risk"
+        # Scale for handicap (higher handicap -> reduce make%)
+        # handicap_factor ~0.8 for low hc, ~1.2+ for higher
+        skill_scale = 1.1 - 0.25 * (handicap_factor - 1.0)
+        skill_scale = max(0.55, min(skill_scale, 1.05))
+        make = base_make * skill_scale
+
+        # Green speed – faster + downhill is tougher, uphill slightly easier
+        speed_delta = (stimp - 10.0) * 0.02  # +/- ~6% over whole range
+        if slope_dir == "Downhill":
+            make *= (1.0 - abs(speed_delta) - 0.06)
+        elif slope_dir == "Uphill":
+            make *= (1.0 - 0.02 + (-speed_delta * 0.5))
+        # Flat: just apply small speed effect
         else:
-            risk_color = "🔴"
-            risk_text = "High three-putt risk – prioritize cozy speed"
+            make *= (1.0 - abs(speed_delta) * 0.5)
 
-        st.caption(f"{risk_color} {risk_text}")
+        # Break severity
+        if break_severity == "Subtle":
+            make *= 0.98
+        elif break_severity == "Moderate":
+            make *= 0.92
+        else:  # Big
+            make *= 0.85
 
-        # Bar chart of distribution
-        data = pd.DataFrame(
-            {
-                "Outcome": ["Make", "Two-putt", "Three-plus"],
-                "Probability": [p_make, p_two, p_three],
-            }
-        )
+        # Double break is just harder
+        if break_dir == "Double Break":
+            make *= 0.9
 
-        chart = (
-            alt.Chart(data)
-            .mark_bar(cornerRadiusTopLeft=5, cornerRadiusTopRight=5)
-            .encode(
-                x=alt.X("Outcome:N", title=""),
-                y=alt.Y("Probability:Q", title="Probability", axis=alt.Axis(format="%")),
-                color=alt.Color(
-                    "Outcome:N",
-                    scale=alt.Scale(
-                        domain=["Make", "Two-putt", "Three-plus"],
-                        range=["#2ecc71", "#3498db", "#e74c3c"],
-                    ),
-                    legend=None,
+        # Nerves – more nerves -> lower make %
+        nerves_penalty = 1.0 - (nerves - 3) * 0.02  # 3 is “normal”
+        nerves_penalty = max(0.80, min(1.05, nerves_penalty))
+        make *= nerves_penalty
+
+        # Distance-driven 3-putt baseline
+        if length_ft <= 15:
+            three = 0.01 * max(0.0, length_ft - 10.0)
+        elif length_ft <= 30:
+            three = 0.06 + 0.01 * (length_ft - 15.0)
+        else:
+            three = 0.21 + 0.008 * (length_ft - 30.0)
+
+        # Harder situations bump 3-putt chances a bit
+        if slope_dir == "Downhill":
+            three *= 1.15
+        if break_severity == "Big":
+            three *= 1.15
+        if nerves >= 7:
+            three *= 1.15
+
+        three = max(0.0, min(three, 0.60))
+
+        # Ensure probabilities are consistent
+        make = max(0.0, min(make, 0.90))
+        two = max(0.0, 1.0 - make - three)
+        # normalize just in case of rounding
+        total = make + two + three
+        if total > 0:
+            make /= total
+            two /= total
+            three /= total
+
+        return make, two, three
+
+    make_p, two_p, three_p = _putt_prob_model(
+        putt_length_ft,
+        stimp,
+        slope_dir,
+        break_dir,
+        break_severity,
+        nerves,
+        handicap_factor,
+    )
+
+    # ---- Display metrics ----
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.metric("1-putt (Make %)", f"{make_p*100:.1f}%")
+    with col_b:
+        st.metric("2-putt %", f"{two_p*100:.1f}%")
+    with col_c:
+        st.metric("3-putt %", f"{three_p*100:.1f}%")
+
+    # ---- Compact probability bar chart ----
+    prob_df = pd.DataFrame(
+        {
+            "Outcome": ["1-putt", "2-putt", "3+ putt"],
+            "Probability": [make_p * 100, two_p * 100, three_p * 100],
+        }
+    )
+
+    prob_chart = (
+        alt.Chart(prob_df)
+        .mark_bar(size=50, cornerRadiusTopLeft=6, cornerRadiusTopRight=6)
+        .encode(
+            x=alt.X("Outcome:N", title=""),
+            y=alt.Y("Probability:Q", title="Probability (%)", scale=alt.Scale(domain=[0, 100])),
+            color=alt.Color(
+                "Outcome:N",
+                scale=alt.Scale(
+                    domain=["1-putt", "2-putt", "3+ putt"],
+                    range=["#2ecc71", "#3498db", "#e74c3c"],
                 ),
-            )
-            .properties(height=260)
-            .configure_view(stroke=None, fill="#05070b")
-            .configure_axis(labelColor="#f5f5f5", titleColor="#f5f5f5")
-            .configure_title(color="#f5f5f5")
+                legend=None,
+            ),
         )
+        .properties(height=260)
+        .configure_view(stroke=None)
+    )
 
-        st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(prob_chart, use_container_width=True)
 
-        # Aim & speed guidance
-        st.markdown("### Aim & Speed Suggestion")
+    # ---- Mental cue / coaching text ----
+    st.markdown("### Mental Takeaway")
 
-        if abs(aim_inches) < 0.25:
-            aim_text = "Play this essentially straight."
-        else:
-            side = "outside right edge" if aim_inches > 0 else "outside left edge"
-            aim_text = f"Aim about **{abs(aim_inches):.1f}\" {side}**."
+    if make_p > 0.5:
+        summary = "This is a **scoring opportunity**. Commit to the line and be decisive."
+    elif three_p > 0.20:
+        summary = "This is a **survival putt**. Focus on dying it near the hole and avoiding 3-putt."
+    else:
+        summary = "Solid chance to 2-putt with some make upside. Good pace and start line are key."
 
-        st.markdown(f"- **Aim:** {aim_text}")
-        st.markdown(f"- **Speed:** {speed_advice}")
-        st.caption(
-            "Use this as a *practice* tool to calibrate your feels. "
-            "On the course, combine the numbers with your own eyes and instincts."
-        )
+    st.write(summary)
+    st.caption(
+        "Tip: Before you hit the putt, say out loud what a *good* outcome looks like "
+        "(e.g., 'hole it or leave it inside 2 feet'). That keeps your brain in process mode "
+        "instead of fear mode."
+    )
 
 # ============================================================
 # PAR STRATEGY TAB (Hole Strategy)
