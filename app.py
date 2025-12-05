@@ -1463,13 +1463,13 @@ with tab_prep:
     # --- Engine plays-like (hidden until reveal) ---
     # You can choose to include your personal tendency here; for now we keep it Neutral
     engine_plays_like = sge.calculate_plays_like_yardage(
-        raw_yards=scenario["Yardage"],
-        wind_dir=scenario["Wind Direction"],
-        wind_strength_label=scenario["Wind Strength"],
-        elevation_label=scenario["Elevation"],
-        lie_label=scenario["Lie"],
+        raw_yards=scenario["raw_yards"],
+        wind_dir=scenario["wind_dir"],
+        wind_strength_label=scenario["wind_strength"],
+        elevation_label=scenario["elevation"],
+        lie_label=scenario["lie"],
         tendency_label="Neutral",      # or st.session_state.tendency if you prefer
-        temp_f=st.session_state.get("Temperature °F", 75.0),
+        temp_f=st.session_state.get("temp_f", 75.0),
         baseline_temp_f=75.0,
     )
 
