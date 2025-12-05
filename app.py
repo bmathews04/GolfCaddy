@@ -470,6 +470,7 @@ with tab_play:
                     "Trouble Left?",
                     ["None", "Mild", "Severe"],
                     index=0,
+                    key="play_trouble_left",
                 )
 
                 col4, col5, col6 = st.columns(3)
@@ -477,6 +478,7 @@ with tab_play:
                     "Trouble Right?",
                     ["None", "Mild", "Severe"],
                     index=0,
+                    key="play_trouble_right",
                 )
                 pin_location = col5.selectbox(
                     "Pin Depth",
@@ -1336,8 +1338,8 @@ with tab_strategy:
             ["Narrow", "Medium", "Wide"],
             index=1,
         )
-        tee_left_trouble = st.selectbox("Trouble Left?", ["None", "Mild", "Severe"])
-        tee_right_trouble = st.selectbox("Trouble Right?", ["None", "Mild", "Severe"])
+        tee_left_trouble = st.selectbox("Trouble Left?", ["None", "Mild", "Severe"], key="strategy_trouble_left",)
+        tee_right_trouble = st.selectbox("Trouble Right?", ["None", "Mild", "Severe", key="strategy_trouble_right",)
 
     skill_factor = 1.0 * st.session_state.handicap_factor
 
