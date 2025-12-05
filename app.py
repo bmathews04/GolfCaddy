@@ -1323,7 +1323,7 @@ with tab_putting:
 # ============================================================
 
 with tab_strategy:
-    st.subheader("Hole Strategy (Par 3 / 4 / 5)")
+    st.subheader("Hole Strategy:")
 
     col_s1, col_s2 = st.columns(2)
     with col_s1:
