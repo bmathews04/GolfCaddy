@@ -1337,9 +1337,10 @@ with tab_strategy:
             "Fairway Width (for tee shot)", 
             ["Narrow", "Medium", "Wide"],
             index=1,
+            key="par_fairway_width"
         )
-        tee_left_trouble = st.selectbox("Trouble Left?", ["None", "Mild", "Severe"], key="strategy_trouble_left",)
-        tee_right_trouble = st.selectbox("Trouble Right?", ["None", "Mild", "Severe", key="strategy_trouble_right",)
+        tee_left_trouble = st.selectbox("Trouble Left?", ["None", "Mild", "Severe"], key="par_tee_left_trouble",)
+        tee_right_trouble = st.selectbox("Trouble Right?", ["None", "Mild", "Severe", key="par_tee_right_trouble",)
 
     skill_factor = 1.0 * st.session_state.handicap_factor
 
